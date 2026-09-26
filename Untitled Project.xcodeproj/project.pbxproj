@@ -1,0 +1,1049 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 90;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		53FB0F903067C62800FCDAEB /* DeviceActivity.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 53FB0F8F3067C62800FCDAEB /* DeviceActivity.framework */; };
+		53FB0F983067C62800FCDAEB /* eGuardActivityMonitor.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 53FB0F8D3067C62800FCDAEB /* eGuardActivityMonitor.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		53FB0FAE3067C62900FCDAEB /* eGuardActivityReport.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 53FB0FA23067C62900FCDAEB /* eGuardActivityReport.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		53FB0FBA3067C62A00FCDAEB /* ManagedSettings.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 53FB0FB93067C62A00FCDAEB /* ManagedSettings.framework */; };
+		53FB0FBC3067C62A00FCDAEB /* ManagedSettingsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 53FB0FBB3067C62A00FCDAEB /* ManagedSettingsUI.framework */; };
+		53FB0FC43067C62A00FCDAEB /* eGuardShieldConfiguration.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 53FB0FB83067C62A00FCDAEB /* eGuardShieldConfiguration.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		53FB0F963067C62800FCDAEB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 53FB0F8C3067C62800FCDAEB;
+			remoteInfo = eGuardActivityMonitor;
+		};
+		53FB0FAC3067C62900FCDAEB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 53FB0FA13067C62900FCDAEB;
+			remoteInfo = eGuardActivityReport;
+		};
+		53FB0FC23067C62A00FCDAEB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 53FB0FB73067C62A00FCDAEB;
+			remoteInfo = eGuardShieldConfiguration;
+		};
+		EG00000000000000000000A1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000100000000;
+			remoteInfo = MyApp;
+		};
+		EG00000000000000000000A2 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000100000000;
+			remoteInfo = MyApp;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		53FB0F9D3067C62800FCDAEB /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = PlugIns;
+			files = (
+				53FB0FC43067C62A00FCDAEB /* eGuardShieldConfiguration.appex in Embed Foundation Extensions */,
+				53FB0F983067C62800FCDAEB /* eGuardActivityMonitor.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+		};
+		53FB0FB33067C62900FCDAEB /* Embed ExtensionKit Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "$(EXTENSIONS_FOLDER_PATH)";
+			dstSubfolder = Product;
+			files = (
+				53FB0FAE3067C62900FCDAEB /* eGuardActivityReport.appex in Embed ExtensionKit Extensions */,
+			);
+			name = "Embed ExtensionKit Extensions";
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		000000000000000000000120 /* MyApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		53FB0F8D3067C62800FCDAEB /* eGuardActivityMonitor.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = eGuardActivityMonitor.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		53FB0F8F3067C62800FCDAEB /* DeviceActivity.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = DeviceActivity.framework; path = System/Library/Frameworks/DeviceActivity.framework; sourceTree = SDKROOT; };
+		53FB0FA23067C62900FCDAEB /* eGuardActivityReport.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = eGuardActivityReport.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		53FB0FB83067C62A00FCDAEB /* eGuardShieldConfiguration.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = eGuardShieldConfiguration.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		53FB0FB93067C62A00FCDAEB /* ManagedSettings.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ManagedSettings.framework; path = System/Library/Frameworks/ManagedSettings.framework; sourceTree = SDKROOT; };
+		53FB0FBB3067C62A00FCDAEB /* ManagedSettingsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ManagedSettingsUI.framework; path = Library/Frameworks/ManagedSettingsUI.framework; sourceTree = DEVELOPER_DIR; };
+		53FB0FCD3067C62B00FCDAEB /* eGuardTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eGuardTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		53FB0FD83067C62C00FCDAEB /* eGuardUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eGuardUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		53FB0F993067C62800FCDAEB /* Exceptions for "eGuardActivityMonitor" folder in "eGuardActivityMonitor" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 53FB0F8C3067C62800FCDAEB /* eGuardActivityMonitor */;
+		};
+		53FB0FAF3067C62900FCDAEB /* Exceptions for "eGuardActivityReport" folder in "eGuardActivityReport" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 53FB0FA13067C62900FCDAEB /* eGuardActivityReport */;
+		};
+		53FB0FC53067C62A00FCDAEB /* Exceptions for "eGuardShieldConfiguration" folder in "eGuardShieldConfiguration" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 53FB0FB73067C62A00FCDAEB /* eGuardShieldConfiguration */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		000000000000000000000010 /* eGuard */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = eGuard;
+			sourceTree = "<group>";
+		};
+		53FB0F913067C62800FCDAEB /* eGuardActivityMonitor */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				53FB0F993067C62800FCDAEB /* Exceptions for "eGuardActivityMonitor" folder in "eGuardActivityMonitor" target */,
+			);
+			path = eGuardActivityMonitor;
+			sourceTree = "<group>";
+		};
+		53FB0FA33067C62900FCDAEB /* eGuardActivityReport */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				53FB0FAF3067C62900FCDAEB /* Exceptions for "eGuardActivityReport" folder in "eGuardActivityReport" target */,
+			);
+			path = eGuardActivityReport;
+			sourceTree = "<group>";
+		};
+		53FB0FBD3067C62A00FCDAEB /* eGuardShieldConfiguration */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				53FB0FC53067C62A00FCDAEB /* Exceptions for "eGuardShieldConfiguration" folder in "eGuardShieldConfiguration" target */,
+			);
+			path = eGuardShieldConfiguration;
+			sourceTree = "<group>";
+		};
+		53FB0FCE3067C62B00FCDAEB /* eGuardTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = eGuardTests;
+			sourceTree = "<group>";
+		};
+		53FB0FD93067C62C00FCDAEB /* eGuardUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = eGuardUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		000000000000000130000000 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		53FB0F8A3067C62800FCDAEB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				53FB0F903067C62800FCDAEB /* DeviceActivity.framework in Frameworks */,
+			);
+		};
+		53FB0F9F3067C62900FCDAEB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		53FB0FB53067C62A00FCDAEB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				53FB0FBA3067C62A00FCDAEB /* ManagedSettings.framework in Frameworks */,
+				53FB0FBC3067C62A00FCDAEB /* ManagedSettingsUI.framework in Frameworks */,
+			);
+		};
+		53FB0FCA3067C62B00FCDAEB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		53FB0FD53067C62C00FCDAEB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		000000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000010 /* eGuard */,
+				53FB0F913067C62800FCDAEB /* eGuardActivityMonitor */,
+				53FB0FA33067C62900FCDAEB /* eGuardActivityReport */,
+				53FB0FBD3067C62A00FCDAEB /* eGuardShieldConfiguration */,
+				53FB0FCE3067C62B00FCDAEB /* eGuardTests */,
+				53FB0FD93067C62C00FCDAEB /* eGuardUITests */,
+				53FB0F8E3067C62800FCDAEB /* Frameworks */,
+				000000000000000000000020 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		000000000000000000000020 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000120 /* MyApp.app */,
+				53FB0F8D3067C62800FCDAEB /* eGuardActivityMonitor.appex */,
+				53FB0FA23067C62900FCDAEB /* eGuardActivityReport.appex */,
+				53FB0FB83067C62A00FCDAEB /* eGuardShieldConfiguration.appex */,
+				53FB0FCD3067C62B00FCDAEB /* eGuardTests.xctest */,
+				53FB0FD83067C62C00FCDAEB /* eGuardUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		53FB0F8E3067C62800FCDAEB /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				53FB0F8F3067C62800FCDAEB /* DeviceActivity.framework */,
+				53FB0FB93067C62A00FCDAEB /* ManagedSettings.framework */,
+				53FB0FBB3067C62A00FCDAEB /* ManagedSettingsUI.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		000000000000000100000000 /* MyApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "MyApp" */;
+			buildPhases = (
+				000000000000000120000000 /* Sources */,
+				000000000000000130000000 /* Frameworks */,
+				000000000000000140000000 /* Resources */,
+				53FB0F9D3067C62800FCDAEB /* Embed Foundation Extensions */,
+				53FB0FB33067C62900FCDAEB /* Embed ExtensionKit Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				53FB0F973067C62800FCDAEB /* PBXTargetDependency */,
+				53FB0FAD3067C62900FCDAEB /* PBXTargetDependency */,
+				53FB0FC33067C62A00FCDAEB /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				000000000000000000000010 /* eGuard */,
+			);
+			name = MyApp;
+			productName = MyApp;
+			productReference = 000000000000000000000120 /* MyApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+		53FB0F8C3067C62800FCDAEB /* eGuardActivityMonitor */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 53FB0F9A3067C62800FCDAEB /* Build configuration list for PBXNativeTarget "eGuardActivityMonitor" */;
+			buildPhases = (
+				53FB0F893067C62800FCDAEB /* Sources */,
+				53FB0F8A3067C62800FCDAEB /* Frameworks */,
+				53FB0F8B3067C62800FCDAEB /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				53FB0F913067C62800FCDAEB /* eGuardActivityMonitor */,
+			);
+			name = eGuardActivityMonitor;
+			productName = eGuardActivityMonitor;
+			productReference = 53FB0F8D3067C62800FCDAEB /* eGuardActivityMonitor.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		53FB0FA13067C62900FCDAEB /* eGuardActivityReport */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 53FB0FB03067C62900FCDAEB /* Build configuration list for PBXNativeTarget "eGuardActivityReport" */;
+			buildPhases = (
+				53FB0F9E3067C62900FCDAEB /* Sources */,
+				53FB0F9F3067C62900FCDAEB /* Frameworks */,
+				53FB0FA03067C62900FCDAEB /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				53FB0FA33067C62900FCDAEB /* eGuardActivityReport */,
+			);
+			name = eGuardActivityReport;
+			productName = eGuardActivityReport;
+			productReference = 53FB0FA23067C62900FCDAEB /* eGuardActivityReport.appex */;
+			productType = "com.apple.product-type.extensionkit-extension";
+		};
+		53FB0FB73067C62A00FCDAEB /* eGuardShieldConfiguration */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 53FB0FC63067C62A00FCDAEB /* Build configuration list for PBXNativeTarget "eGuardShieldConfiguration" */;
+			buildPhases = (
+				53FB0FB43067C62A00FCDAEB /* Sources */,
+				53FB0FB53067C62A00FCDAEB /* Frameworks */,
+				53FB0FB63067C62A00FCDAEB /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				53FB0FBD3067C62A00FCDAEB /* eGuardShieldConfiguration */,
+			);
+			name = eGuardShieldConfiguration;
+			productName = eGuardShieldConfiguration;
+			productReference = 53FB0FB83067C62A00FCDAEB /* eGuardShieldConfiguration.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		53FB0FCC3067C62B00FCDAEB /* eGuardTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 53FB0FD13067C62B00FCDAEB /* Build configuration list for PBXNativeTarget "eGuardTests" */;
+			buildPhases = (
+				53FB0FC93067C62B00FCDAEB /* Sources */,
+				53FB0FCA3067C62B00FCDAEB /* Frameworks */,
+				53FB0FCB3067C62B00FCDAEB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EG00000000000000000000B1 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				53FB0FCE3067C62B00FCDAEB /* eGuardTests */,
+			);
+			name = eGuardTests;
+			productName = eGuardTests;
+			productReference = 53FB0FCD3067C62B00FCDAEB /* eGuardTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		53FB0FD73067C62C00FCDAEB /* eGuardUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 53FB0FDC3067C62C00FCDAEB /* Build configuration list for PBXNativeTarget "eGuardUITests" */;
+			buildPhases = (
+				53FB0FD43067C62C00FCDAEB /* Sources */,
+				53FB0FD53067C62C00FCDAEB /* Frameworks */,
+				53FB0FD63067C62C00FCDAEB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EG00000000000000000000B2 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				53FB0FD93067C62C00FCDAEB /* eGuardUITests */,
+			);
+			name = eGuardUITests;
+			productName = eGuardUITests;
+			productReference = 53FB0FD83067C62C00FCDAEB /* eGuardUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		000000000000000000000000 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					000000000000000100000000 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					53FB0F8C3067C62800FCDAEB = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					53FB0FA13067C62900FCDAEB = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					53FB0FB73067C62A00FCDAEB = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					53FB0FCC3067C62B00FCDAEB = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					53FB0FD73067C62C00FCDAEB = {
+						CreatedOnToolsVersion = 27.0;
+					};
+				};
+			};
+			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "Untitled Project" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 000000000000000000000001;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 90;
+			productRefGroup = 000000000000000000000020 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				000000000000000100000000 /* MyApp */,
+				53FB0F8C3067C62800FCDAEB /* eGuardActivityMonitor */,
+				53FB0FA13067C62900FCDAEB /* eGuardActivityReport */,
+				53FB0FB73067C62A00FCDAEB /* eGuardShieldConfiguration */,
+				53FB0FCC3067C62B00FCDAEB /* eGuardTests */,
+				53FB0FD73067C62C00FCDAEB /* eGuardUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		000000000000000140000000 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		53FB0F8B3067C62800FCDAEB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		53FB0FA03067C62900FCDAEB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		53FB0FB63067C62A00FCDAEB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		53FB0FCB3067C62B00FCDAEB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		53FB0FD63067C62C00FCDAEB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		000000000000000120000000 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		53FB0F893067C62800FCDAEB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		53FB0F9E3067C62900FCDAEB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		53FB0FB43067C62A00FCDAEB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		53FB0FC93067C62B00FCDAEB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		53FB0FD43067C62C00FCDAEB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		53FB0F973067C62800FCDAEB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 53FB0F8C3067C62800FCDAEB /* eGuardActivityMonitor */;
+			targetProxy = 53FB0F963067C62800FCDAEB /* PBXContainerItemProxy */;
+		};
+		53FB0FAD3067C62900FCDAEB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 53FB0FA13067C62900FCDAEB /* eGuardActivityReport */;
+			targetProxy = 53FB0FAC3067C62900FCDAEB /* PBXContainerItemProxy */;
+		};
+		53FB0FC33067C62A00FCDAEB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 53FB0FB73067C62A00FCDAEB /* eGuardShieldConfiguration */;
+			targetProxy = 53FB0FC23067C62A00FCDAEB /* PBXContainerItemProxy */;
+		};
+		EG00000000000000000000B1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000100000000 /* MyApp */;
+			targetProxy = EG00000000000000000000A1 /* PBXContainerItemProxy */;
+		};
+		EG00000000000000000000B2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000100000000 /* MyApp */;
+			targetProxy = EG00000000000000000000A2 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		000000000000000011000000 /* Debug configuration for PBXProject "Untitled Project" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DRIVERKIT_DEPLOYMENT_TARGET = 27.0;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.6.2;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PROJECT_UNIQUE_VALUE = H9UHPJKT;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				TVOS_DEPLOYMENT_TARGET = 27.0;
+				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+				XROS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Debug;
+		};
+		000000000000000012000000 /* Release configuration for PBXProject "Untitled Project" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DRIVERKIT_DEPLOYMENT_TARGET = 27.0;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.6.2;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PROJECT_UNIQUE_VALUE = H9UHPJKT;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				TVOS_DEPLOYMENT_TARGET = 27.0;
+				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+				XROS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Release;
+		};
+		000000000000000111000000 /* Debug configuration for PBXNativeTarget "MyApp" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = eGuard/MyApp.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = eGuard;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "devplaceholder.$(PROJECT_UNIQUE_VALUE:identifier).$(PRODUCT_NAME:rfc1034identifier)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		000000000000000112000000 /* Release configuration for PBXNativeTarget "MyApp" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = eGuard/MyApp.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = eGuard;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "devplaceholder.$(PROJECT_UNIQUE_VALUE:identifier).$(PRODUCT_NAME:rfc1034identifier)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		53FB0F9B3067C62800FCDAEB /* Debug configuration for PBXNativeTarget "eGuardActivityMonitor" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = eGuardActivityMonitor/eGuardActivityMonitor.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = eGuardActivityMonitor/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = eGuardActivityMonitor;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardActivityMonitor;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		53FB0F9C3067C62800FCDAEB /* Release configuration for PBXNativeTarget "eGuardActivityMonitor" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = eGuardActivityMonitor/eGuardActivityMonitor.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = eGuardActivityMonitor/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = eGuardActivityMonitor;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardActivityMonitor;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		53FB0FB13067C62900FCDAEB /* Debug configuration for PBXNativeTarget "eGuardActivityReport" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = eGuardActivityReport/eGuardActivityReport.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = eGuardActivityReport/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = eGuardActivityReport;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardActivityReport;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		53FB0FB23067C62900FCDAEB /* Release configuration for PBXNativeTarget "eGuardActivityReport" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = eGuardActivityReport/eGuardActivityReport.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = eGuardActivityReport/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = eGuardActivityReport;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardActivityReport;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		53FB0FC73067C62A00FCDAEB /* Debug configuration for PBXNativeTarget "eGuardShieldConfiguration" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = eGuardShieldConfiguration/eGuardShieldConfiguration.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = eGuardShieldConfiguration/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = eGuardShieldConfiguration;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardShieldConfiguration;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		53FB0FC83067C62A00FCDAEB /* Release configuration for PBXNativeTarget "eGuardShieldConfiguration" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = eGuardShieldConfiguration/eGuardShieldConfiguration.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = eGuardShieldConfiguration/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = eGuardShieldConfiguration;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardShieldConfiguration;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		53FB0FD23067C62B00FCDAEB /* Debug configuration for PBXNativeTarget "eGuardTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.6;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.yourcompany.eGuardTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MyApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MyApp";
+				XROS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Debug;
+		};
+		53FB0FD33067C62B00FCDAEB /* Release configuration for PBXNativeTarget "eGuardTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.6;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.yourcompany.eGuardTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MyApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MyApp";
+				XROS_DEPLOYMENT_TARGET = 27.0;
+			};
+			name = Release;
+		};
+		53FB0FDD3067C62C00FCDAEB /* Debug configuration for PBXNativeTarget "eGuardUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.yourcompany.eGuardUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = MyApp;
+			};
+			name = Debug;
+		};
+		53FB0FDE3067C62C00FCDAEB /* Release configuration for PBXNativeTarget "eGuardUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.yourcompany.eGuardUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = MyApp;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		000000000000000010000000 /* Build configuration list for PBXProject "Untitled Project" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000011000000 /* Debug configuration for PBXProject "Untitled Project" */,
+				000000000000000012000000 /* Release configuration for PBXProject "Untitled Project" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		000000000000000110000000 /* Build configuration list for PBXNativeTarget "MyApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000111000000 /* Debug configuration for PBXNativeTarget "MyApp" */,
+				000000000000000112000000 /* Release configuration for PBXNativeTarget "MyApp" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		53FB0F9A3067C62800FCDAEB /* Build configuration list for PBXNativeTarget "eGuardActivityMonitor" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				53FB0F9B3067C62800FCDAEB /* Debug configuration for PBXNativeTarget "eGuardActivityMonitor" */,
+				53FB0F9C3067C62800FCDAEB /* Release configuration for PBXNativeTarget "eGuardActivityMonitor" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		53FB0FB03067C62900FCDAEB /* Build configuration list for PBXNativeTarget "eGuardActivityReport" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				53FB0FB13067C62900FCDAEB /* Debug configuration for PBXNativeTarget "eGuardActivityReport" */,
+				53FB0FB23067C62900FCDAEB /* Release configuration for PBXNativeTarget "eGuardActivityReport" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		53FB0FC63067C62A00FCDAEB /* Build configuration list for PBXNativeTarget "eGuardShieldConfiguration" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				53FB0FC73067C62A00FCDAEB /* Debug configuration for PBXNativeTarget "eGuardShieldConfiguration" */,
+				53FB0FC83067C62A00FCDAEB /* Release configuration for PBXNativeTarget "eGuardShieldConfiguration" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		53FB0FD13067C62B00FCDAEB /* Build configuration list for PBXNativeTarget "eGuardTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				53FB0FD23067C62B00FCDAEB /* Debug configuration for PBXNativeTarget "eGuardTests" */,
+				53FB0FD33067C62B00FCDAEB /* Release configuration for PBXNativeTarget "eGuardTests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		53FB0FDC3067C62C00FCDAEB /* Build configuration list for PBXNativeTarget "eGuardUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				53FB0FDD3067C62C00FCDAEB /* Debug configuration for PBXNativeTarget "eGuardUITests" */,
+				53FB0FDE3067C62C00FCDAEB /* Release configuration for PBXNativeTarget "eGuardUITests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 000000000000000000000000 /* Project object */;
+}
