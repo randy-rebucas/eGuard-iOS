@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import eGuard
 
 /// Serves canned responses so the client can be tested without a network.
 final class StubURLProtocol: URLProtocol {

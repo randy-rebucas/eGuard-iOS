@@ -24,7 +24,7 @@ final class ProtectionEditorViewModel {
 
     func load(api: EGuardAPIService) async {
         state = .loading
-        state = await MyApp.load {
+        state = await eGuard.load {
             guard let protection = try await api.protections(childId: childId).first(where: { $0.key == key }) else {
                 throw APIError.server(status: 404, code: "not_found", message: "That protection couldn't be found.")
             }

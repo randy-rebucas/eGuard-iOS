@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import MyApp
+@testable import eGuard
 
 /// Integration of the use cases with mock platform services.
 @Suite("Configuration and verification")

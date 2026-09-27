@@ -1,7 +1,7 @@
 import FamilyControls
 import Foundation
 import Testing
-@testable import MyApp
+@testable import eGuard
 
 @Suite("Capability detection")
 struct CapabilityTests {

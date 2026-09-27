@@ -76,7 +76,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		000000000000000000000120 /* MyApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MyApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000120 /* eGuard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = eGuard.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		53FB0F8D3067C62800FCDAEB /* eGuardActivityMonitor.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = eGuardActivityMonitor.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		53FB0F8F3067C62800FCDAEB /* DeviceActivity.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = DeviceActivity.framework; path = System/Library/Frameworks/DeviceActivity.framework; sourceTree = SDKROOT; };
 		53FB0FA23067C62900FCDAEB /* eGuardActivityReport.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = eGuardActivityReport.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -207,7 +207,7 @@
 		000000000000000000000020 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000120 /* MyApp.app */,
+				000000000000000000000120 /* eGuard.app */,
 				53FB0F8D3067C62800FCDAEB /* eGuardActivityMonitor.appex */,
 				53FB0FA23067C62900FCDAEB /* eGuardActivityReport.appex */,
 				53FB0FB83067C62A00FCDAEB /* eGuardShieldConfiguration.appex */,
@@ -230,9 +230,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		000000000000000100000000 /* MyApp */ = {
+		000000000000000100000000 /* eGuard */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "MyApp" */;
+			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "eGuard" */;
 			buildPhases = (
 				000000000000000120000000 /* Sources */,
 				000000000000000130000000 /* Frameworks */,
@@ -250,9 +250,9 @@
 			fileSystemSynchronizedGroups = (
 				000000000000000000000010 /* eGuard */,
 			);
-			name = MyApp;
+			name = eGuard;
 			productName = MyApp;
-			productReference = 000000000000000000000120 /* MyApp.app */;
+			productReference = 000000000000000000000120 /* eGuard.app */;
 			productType = "com.apple.product-type.application";
 		};
 		53FB0F8C3067C62800FCDAEB /* eGuardActivityMonitor */ = {
@@ -381,7 +381,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "Untitled Project" */;
+			buildConfigurationList = 000000000000000010000000 /* Build configuration list for PBXProject "eGuard" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -395,7 +395,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				000000000000000100000000 /* MyApp */,
+				000000000000000100000000 /* eGuard */,
 				53FB0F8C3067C62800FCDAEB /* eGuardActivityMonitor */,
 				53FB0FA13067C62900FCDAEB /* eGuardActivityReport */,
 				53FB0FB73067C62A00FCDAEB /* eGuardShieldConfiguration */,
@@ -489,18 +489,18 @@
 		};
 		EG00000000000000000000B1 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 000000000000000100000000 /* MyApp */;
+			target = 000000000000000100000000 /* eGuard */;
 			targetProxy = EG00000000000000000000A1 /* PBXContainerItemProxy */;
 		};
 		EG00000000000000000000B2 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 000000000000000100000000 /* MyApp */;
+			target = 000000000000000100000000 /* eGuard */;
 			targetProxy = EG00000000000000000000A2 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		000000000000000011000000 /* Debug configuration for PBXProject "Untitled Project" */ = {
+		000000000000000011000000 /* Debug configuration for PBXProject "eGuard" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -570,7 +570,7 @@
 			};
 			name = Debug;
 		};
-		000000000000000012000000 /* Release configuration for PBXProject "Untitled Project" */ = {
+		000000000000000012000000 /* Release configuration for PBXProject "eGuard" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -632,11 +632,11 @@
 			};
 			name = Release;
 		};
-		000000000000000111000000 /* Debug configuration for PBXNativeTarget "MyApp" */ = {
+		000000000000000111000000 /* Debug configuration for PBXNativeTarget "eGuard" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = eGuard/MyApp.entitlements;
+				CODE_SIGN_ENTITLEMENTS = eGuard/eGuard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = YES;
@@ -673,11 +673,11 @@
 			};
 			name = Debug;
 		};
-		000000000000000112000000 /* Release configuration for PBXNativeTarget "MyApp" */ = {
+		000000000000000112000000 /* Release configuration for PBXNativeTarget "eGuard" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = eGuard/MyApp.entitlements;
+				CODE_SIGN_ENTITLEMENTS = eGuard/eGuard.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = YES;
@@ -730,7 +730,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardActivityMonitor;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.eGuard.eGuardActivityMonitor;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = iphoneos;
@@ -760,7 +760,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardActivityMonitor;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.eGuard.eGuardActivityMonitor;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = iphoneos;
@@ -791,7 +791,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardActivityReport;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.eGuard.eGuardActivityReport;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
@@ -820,7 +820,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardActivityReport;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.eGuard.eGuardActivityReport;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
@@ -850,7 +850,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardShieldConfiguration;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.eGuard.eGuardShieldConfiguration;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
@@ -879,7 +879,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.MyApp.eGuardShieldConfiguration;
+				PRODUCT_BUNDLE_IDENTIFIER = devplaceholder.H9UHPJKT.eGuard.eGuardShieldConfiguration;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
@@ -991,19 +991,19 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		000000000000000010000000 /* Build configuration list for PBXProject "Untitled Project" */ = {
+		000000000000000010000000 /* Build configuration list for PBXProject "eGuard" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000011000000 /* Debug configuration for PBXProject "Untitled Project" */,
-				000000000000000012000000 /* Release configuration for PBXProject "Untitled Project" */,
+				000000000000000011000000 /* Debug configuration for PBXProject "eGuard" */,
+				000000000000000012000000 /* Release configuration for PBXProject "eGuard" */,
 			);
 			defaultConfigurationName = Release;
 		};
-		000000000000000110000000 /* Build configuration list for PBXNativeTarget "MyApp" */ = {
+		000000000000000110000000 /* Build configuration list for PBXNativeTarget "eGuard" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				000000000000000111000000 /* Debug configuration for PBXNativeTarget "MyApp" */,
-				000000000000000112000000 /* Release configuration for PBXNativeTarget "MyApp" */,
+				000000000000000111000000 /* Debug configuration for PBXNativeTarget "eGuard" */,
+				000000000000000112000000 /* Release configuration for PBXNativeTarget "eGuard" */,
 			);
 			defaultConfigurationName = Release;
 		};

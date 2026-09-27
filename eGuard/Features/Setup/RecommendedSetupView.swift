@@ -11,7 +11,7 @@ final class RecommendedSetupViewModel {
 
     func load(childId: String, profile: String, api: EGuardAPIService) async {
         state = .loading
-        state = await MyApp.load { try await api.recommendations(childId: childId, profile: profile) }
+        state = await eGuard.load { try await api.recommendations(childId: childId, profile: profile) }
         if let recommendations = state.value {
             configs = Dictionary(uniqueKeysWithValues: recommendations.settings.map { ($0.key, $0.config) })
         }

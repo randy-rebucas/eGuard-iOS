@@ -14,7 +14,7 @@ final class AppsManagementViewModel {
 
     func load(childId: String, api: EGuardAPIService) async {
         if state.value == nil { state = .loading }
-        state = await MyApp.load { try await api.apps(childId: childId, filter: filter) }
+        state = await eGuard.load { try await api.apps(childId: childId, filter: filter) }
     }
 
     func setAllowed(_ allowed: Bool, app: ChildApp, childId: String, api: EGuardAPIService) async {
