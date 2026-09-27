@@ -1,10 +1,13 @@
 import Observation
+import PhotosUI
 import SwiftUI
 
-/// Holds the draft profile and validation for the Child & Device step.
+/// Holds the draft profile and validation for the Add Child step.
 @Observable
 final class ChildDeviceViewModel {
     var profile = ChildProfile()
+    var photoItem: PhotosPickerItem?
+    var isShowingPhotoPicker = false
     private(set) var hasLoaded = false
 
     func load(from model: AppModel) {
@@ -31,44 +34,86 @@ final class ChildDeviceViewModel {
         }
     }
 
+    /// Loads the chosen photo and shrinks it so the profile stays small in the Keychain.
+    func loadPhoto() async {
+        guard let photoItem else { return }
+        guard let data = try? await photoItem.loadTransferable(type: Data.self),
+              let image = UIImage(data: data) else { return }
+        profile.photoData = Self.thumbnailData(from: image)
+    }
+
+    static func thumbnailData(from image: UIImage, maxDimension: CGFloat = 300) -> Data? {
+        let scale = min(1, maxDimension / max(image.size.width, image.size.height))
+        let target = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: target)
+        let resized = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: target)) }
+        return resized.jpegData(compressionQuality: 0.8)
+    }
+
     func save(to model: AppModel) {
         model.saveChildProfile(profile)
     }
 }
 
-/// 02 Child & Device
+/// 04 Add Child (Child & Device)
 struct ChildDeviceView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
     @State private var viewModel = ChildDeviceViewModel()
     @FocusState private var isNameFocused: Bool
 
+    private var isEditing: Bool { model.isSetupComplete }
+
     var body: some View {
         @Bindable var viewModel = viewModel
 
         EGuardScreen {
-            OnboardingProgressIndicator(step: .childDevice)
-            ScreenHeader(title: "Who are you protecting?")
+            if !isEditing {
+                OnboardingProgressIndicator(step: .childDevice)
+            }
+            ScreenHeader(
+                title: isEditing ? "Edit child & device" : "Tell us about your child",
+                subtitle: "We'll personalize the setup for your family."
+            )
 
-            EGuardCard {
-                Text("Child")
-                    .font(EGuardTypography.overline)
-                    .foregroundStyle(EGuardColors.textSecondary)
-                TextField("Child's name", text: $viewModel.profile.name)
-                    .textContentType(.givenName)
-                    .textInputAutocapitalization(.words)
-                    .font(EGuardTypography.title)
-                    .focused($isNameFocused)
-                    .submitLabel(.done)
-                    .accessibilityIdentifier("child.nameField")
-                Divider()
-                Picker("Age", selection: $viewModel.profile.age) {
-                    ForEach(ChildProfile.ageRange, id: \.self) { age in
-                        Text("\(age) years old").tag(age)
+            photoPicker
+
+            VStack(spacing: EGuardSpacing.sm) {
+                EGuardTextField(
+                    label: "Child's name",
+                    placeholder: "Mia",
+                    text: $viewModel.profile.name,
+                    symbolName: "person",
+                    contentType: .givenName,
+                    autocapitalization: .words,
+                    identifier: "child.nameField"
+                )
+
+                HStack(spacing: EGuardSpacing.sm) {
+                    Image(systemName: "birthday.cake")
+                        .foregroundStyle(EGuardColors.neutral)
+                        .frame(width: 22)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Age")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                        Picker("Age", selection: $viewModel.profile.age) {
+                            ForEach(ChildProfile.ageRange, id: \.self) { age in
+                                Text("\(age) years old").tag(age)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .tint(EGuardColors.textPrimary)
+                        .accessibilityIdentifier("child.agePicker")
                     }
+                    Spacer()
                 }
-                .pickerStyle(.menu)
-                .accessibilityIdentifier("child.agePicker")
+                .padding(.horizontal, EGuardSpacing.sm)
+                .padding(.vertical, EGuardSpacing.xs)
+                .background(EGuardColors.surface, in: EGuardShapes.button)
+                .overlay(EGuardShapes.button.strokeBorder(EGuardColors.divider, lineWidth: 1))
             }
 
             EGuardCard {
@@ -93,6 +138,8 @@ struct ChildDeviceView: View {
                     SelectableOptionRow(
                         title: status.title,
                         subtitle: status.explanation,
+                        symbolName: symbol(for: status),
+                        tint: EGuardColors.primary,
                         isSelected: viewModel.profile.relationship == status
                     ) {
                         viewModel.profile.relationship = status
@@ -114,17 +161,55 @@ struct ChildDeviceView: View {
                 }
             }
         } actions: {
-            Button("Continue") {
+            Button(isEditing ? "Save" : "Continue") {
                 viewModel.save(to: model)
-                router.push(.protectionProfile)
+                if isEditing {
+                    router.pop()
+                } else {
+                    router.push(.protectionProfile)
+                }
             }
             .buttonStyle(.eGuardPrimary)
             .disabled(!viewModel.canContinue)
             .accessibilityIdentifier("child.continue")
         }
-        .navigationTitle(OnboardingStep.childDevice.title)
-        .navigationBarTitleDisplayMode(.inline)
+        .brandNavigationTitle()
         .onAppear { viewModel.load(from: model) }
+        .task(id: viewModel.photoItem) { await viewModel.loadPhoto() }
+    }
+
+    /// A plain button presents the system picker, so no remote view sits in the layout
+    /// and intercepts taps meant for the fields below.
+    private var photoPicker: some View {
+        @Bindable var viewModel = viewModel
+        return Button {
+            viewModel.isShowingPhotoPicker = true
+        } label: {
+            ZStack(alignment: .bottomTrailing) {
+                AvatarView(name: viewModel.profile.trimmedName, imageData: viewModel.profile.photoData, size: 108)
+                    .overlay(Circle().strokeBorder(.white, lineWidth: 3))
+                    .shadow(color: EGuardColors.primary.opacity(0.15), radius: 10, y: 4)
+                Image(systemName: "camera.fill")
+                    .font(.footnote.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 30, height: 30)
+                    .background(EGuardColors.primary, in: Circle())
+                    .overlay(Circle().strokeBorder(.white, lineWidth: 2))
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel(viewModel.profile.photoData == nil ? "Add a photo" : "Change photo")
+        .accessibilityIdentifier("child.photo")
+        .photosPicker(isPresented: $viewModel.isShowingPhotoPicker, selection: $viewModel.photoItem, matching: .images)
+    }
+
+    private func symbol(for status: FamilyRelationshipStatus) -> String {
+        switch status {
+        case .childInFamilySharing: "person.2.fill"
+        case .thisDeviceOwner: "iphone"
+        case .notSure: "questionmark.circle.fill"
+        }
     }
 }
 

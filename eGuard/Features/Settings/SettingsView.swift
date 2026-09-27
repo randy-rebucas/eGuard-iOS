@@ -1,71 +1,36 @@
 import SwiftUI
-import UserNotifications
 
-/// App settings: authorization, child profile, privacy, and reset.
+/// 16 Settings: the menu of app sections plus reset.
 struct SettingsView: View {
+    let isRoot: Bool
+
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
     @State private var isConfirmingReset = false
-    @State private var notificationStatus: UNAuthorizationStatus = .notDetermined
+
+    private var version: String {
+        let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+        return "Version \(short)"
+    }
 
     var body: some View {
-        List {
-            Section("Authorization") {
-                EGuardValueRow(label: "Family Controls", value: model.authorizationStatus.title)
-                if !model.authorizationStatus.isAuthorized {
-                    Button("Grant Authorization") { router.push(.authorization) }
-                        .accessibilityIdentifier("settings.authorize")
+        Group {
+            if isRoot {
+                TabScreen {
+                    TabScreenHeader(title: "Settings")
+                } content: {
+                    content
                 }
-            }
-
-            Section("Child & Device") {
-                if let child = model.childProfile {
-                    EGuardValueRow(label: "Child", value: "\(child.trimmedName), \(child.ageDescription)")
-                    EGuardValueRow(label: "Device", value: "\(child.device.displayName) · \(child.device.operatingSystemName)")
-                    EGuardValueRow(label: "Account", value: child.relationship.title)
+            } else {
+                EGuardScreen {
+                    content
+                } actions: {
+                    EmptyView()
                 }
-                Button("Edit Child & Device") { router.push(.childDevice) }
-                Button("Change Protection Profile") { router.push(.protectionProfile) }
-            }
-
-            Section {
-                Button("Protection alerts") { requestNotifications() }
-                    .disabled(notificationStatus == .authorized)
-            } header: {
-                Text("Notifications")
-            } footer: {
-                Text(notificationStatus == .authorized
-                     ? "eGuard can notify you when downtime starts or an allowance runs out."
-                     : "Allow notifications so eGuard can tell you when downtime starts or an allowance runs out.")
-            }
-
-            Section {
-                Label("eGuard configures Apple's Screen Time protections and verifies they are active.", systemImage: "checkmark.shield")
-                Label("eGuard does not read messages, track location, record audio or video, or collect passwords.", systemImage: "eye.slash")
-                Label("App and website choices are stored as Apple's privacy-preserving tokens.", systemImage: "lock")
-            } header: {
-                Text("Privacy")
-            }
-            .font(EGuardTypography.callout)
-
-            Section {
-                Button("Remove All Protections and Reset", role: .destructive) {
-                    isConfirmingReset = true
-                }
-                .accessibilityIdentifier("settings.reset")
-            } footer: {
-                Text("Removes every restriction eGuard applied and deletes the child's profile from this device.")
-            }
-
-            Section {
-                EGuardValueRow(
-                    label: "Version",
-                    value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
-                )
+                .navigationTitle("Settings")
+                .navigationBarTitleDisplayMode(.inline)
             }
         }
-        .navigationTitle("Settings")
-        .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
             "Remove all protections?",
             isPresented: $isConfirmingReset,
@@ -77,28 +42,98 @@ struct SettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Downtime, limits, and restrictions applied by eGuard will be removed immediately.")
+            Text("Downtime, limits, and restrictions applied by eGuard will be removed immediately, and the account on this device is deleted.")
         }
-        .task { await loadNotificationStatus() }
     }
 
-    private func loadNotificationStatus() async {
-        let settings = await UNUserNotificationCenter.current().notificationSettings()
-        notificationStatus = settings.authorizationStatus
-    }
-
-    private func requestNotifications() {
-        Task {
-            _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
-            await loadNotificationStatus()
+    @ViewBuilder
+    private var content: some View {
+        if let account = model.account {
+            Button {
+                router.push(.account)
+            } label: {
+                EGuardCard {
+                    HStack(spacing: EGuardSpacing.sm) {
+                        AvatarView(name: account.fullName, size: 48)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(account.fullName)
+                                .font(EGuardTypography.headline)
+                                .foregroundStyle(EGuardColors.textPrimary)
+                            Text(account.email)
+                                .font(EGuardTypography.caption)
+                                .foregroundStyle(EGuardColors.textSecondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(EGuardColors.neutral)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
         }
+
+        if !model.authorizationStatus.isAuthorized {
+            EGuardCard {
+                Label("eGuard needs Family Controls authorization", systemImage: "hand.raised.fill")
+                    .font(EGuardTypography.headline)
+                Text("Automatic protections can only be applied and verified after you grant it.")
+                    .font(EGuardTypography.caption)
+                    .foregroundStyle(EGuardColors.textSecondary)
+                Button("Grant Authorization") { router.push(.authorization) }
+                    .buttonStyle(.eGuardSecondary)
+                    .accessibilityIdentifier("settings.authorize")
+            }
+        }
+
+        EGuardCard {
+            EGuardNavRow(title: "Family", subtitle: "Manage children and devices", symbolName: "person.2.fill") {
+                router.show(.children)
+            }
+            Divider()
+            EGuardNavRow(title: "Protection & Controls", subtitle: "Screen time, apps, content", symbolName: "shield.lefthalf.filled", tint: EGuardColors.tileTeal) {
+                router.push(.manageProtection)
+            }
+            Divider()
+            EGuardNavRow(title: "Notifications", subtitle: "Alert preferences", symbolName: "bell.fill", tint: EGuardColors.tileOrange) {
+                router.push(.notifications)
+            }
+            Divider()
+            EGuardNavRow(title: "Privacy", subtitle: "Your data and security", symbolName: "lock.fill", tint: EGuardColors.tilePurple) {
+                router.push(.privacy)
+            }
+            Divider()
+            EGuardNavRow(title: "Account", subtitle: "Profile and login", symbolName: "person.crop.circle.fill", tint: EGuardColors.primary) {
+                router.push(.account)
+            }
+            Divider()
+            EGuardNavRow(title: "Subscription", subtitle: "Manage your plan", symbolName: "crown.fill", tint: EGuardColors.tileYellow) {
+                router.push(.subscription)
+            }
+            Divider()
+            EGuardNavRow(title: "Help & Support", subtitle: "Get assistance", symbolName: "questionmark.circle.fill", tint: EGuardColors.tileTeal) {
+                router.push(.helpSupport)
+            }
+            Divider()
+            EGuardNavRow(title: "About eGuard", subtitle: version, symbolName: "info.circle.fill", tint: EGuardColors.tileGray) {
+                router.push(.about)
+            }
+        }
+
+        Button("Remove All Protections and Reset", role: .destructive) {
+            isConfirmingReset = true
+        }
+        .font(EGuardTypography.label)
+        .foregroundStyle(EGuardColors.danger)
+        .frame(maxWidth: .infinity, minHeight: 50)
+        .background(EGuardColors.surface, in: EGuardShapes.button)
+        .accessibilityIdentifier("settings.reset")
     }
 }
 
 #Preview {
     NavigationStack {
-        SettingsView()
+        SettingsView(isRoot: true)
     }
-    .environment(AppModel.make(arguments: ["-uiTesting", "-setupComplete"]))
+    .environment(AppModel.preview())
     .environment(AppRouter())
 }

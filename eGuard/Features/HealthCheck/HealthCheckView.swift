@@ -20,9 +20,15 @@ final class HealthCheckViewModel {
     var firstAttentionFeature: ProtectionFeature? {
         report?.attentionChecks.first?.feature
     }
+
+    /// "Fix 2 Settings", or nil when nothing needs attention.
+    var fixTitle: String? {
+        guard let count = report?.attentionChecks.count, count > 0 else { return nil }
+        return count == 1 ? "Fix 1 Setting" : "Fix \(count) Settings"
+    }
 }
 
-/// 06 Configuration Health Check. Also reused for "View Health Check" from the dashboard.
+/// 08 Configuration Health. Also reused for "View Health Check" from the dashboard.
 struct HealthCheckView: View {
     let isOnboarding: Bool
 
@@ -34,59 +40,102 @@ struct HealthCheckView: View {
         EGuardScreen {
             if isOnboarding {
                 OnboardingProgressIndicator(step: .healthCheck)
+                ScreenHeader(title: "Configuration Health")
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
-            ScreenHeader(title: "Configuration Health")
 
             if !model.isOnline {
                 OfflineBanner(lastVerified: viewModel.report?.generatedAt)
             }
 
             if let report = viewModel.report {
-                scoreCard(report)
+                scoreGauge(report)
                 checksCard(report)
                 if let attention = report.attentionSummary {
                     attentionCard(attention)
                 }
             } else {
-                EGuardCard {
-                    Text("No health check has been run yet.")
-                        .font(EGuardTypography.callout)
-                        .foregroundStyle(EGuardColors.textSecondary)
-                }
+                EmptyStateView(
+                    symbolName: "heart.text.square",
+                    title: "No health check yet",
+                    message: "eGuard verifies each protection against what Apple's frameworks report."
+                )
             }
         } actions: {
             if isOnboarding {
-                Button("Continue") { router.push(.complete) }
-                    .buttonStyle(.eGuardPrimary)
-                    .accessibilityIdentifier("health.continue")
+                Button(viewModel.fixTitle ?? "Continue") {
+                    if let feature = viewModel.firstAttentionFeature {
+                        router.push(.featureDetail(feature))
+                    } else {
+                        router.push(.complete)
+                    }
+                }
+                .buttonStyle(.eGuardPrimary)
+                .accessibilityIdentifier(viewModel.fixTitle == nil ? "health.continue" : "health.fix")
+                if viewModel.fixTitle != nil {
+                    Button("Continue anyway") { router.push(.complete) }
+                        .buttonStyle(.eGuardText)
+                        .accessibilityIdentifier("health.continue")
+                }
                 Button("Check Again") { viewModel.run(using: model) }
                     .buttonStyle(.eGuardText)
                     .accessibilityIdentifier("health.checkAgain")
             } else {
-                Button("Check Again") { viewModel.run(using: model) }
+                if let fixTitle = viewModel.fixTitle {
+                    Button(fixTitle) {
+                        if let feature = viewModel.firstAttentionFeature {
+                            router.push(.featureDetail(feature))
+                        }
+                    }
                     .buttonStyle(.eGuardPrimary)
-                    .accessibilityIdentifier("health.checkAgain")
+                    .accessibilityIdentifier("health.fix")
+                    Button("Check Again") { viewModel.run(using: model) }
+                        .buttonStyle(.eGuardText)
+                        .accessibilityIdentifier("health.checkAgain")
+                } else {
+                    Button("Check Again") { viewModel.run(using: model) }
+                        .buttonStyle(.eGuardPrimary)
+                        .accessibilityIdentifier("health.checkAgain")
+                }
             }
         }
-        .navigationTitle(isOnboarding ? OnboardingStep.healthCheck.title : "Configuration Health")
-        .navigationBarTitleDisplayMode(.inline)
+        .modifier(HealthTitle(isOnboarding: isOnboarding))
         .onAppear {
             viewModel.loadStored(from: model)
             viewModel.run(using: model)
         }
     }
 
-    private func scoreCard(_ report: ConfigurationHealthReport) -> some View {
-        EGuardCard {
-            Text(report.scoreText)
-                .font(EGuardTypography.metric)
-                .foregroundStyle(EGuardTheme.color(for: report.protectionState))
-                .accessibilityIdentifier("health.score")
+    private func scoreGauge(_ report: ConfigurationHealthReport) -> some View {
+        let tint = EGuardTheme.color(for: report.protectionState)
+        let progress = report.evaluatedCount == 0 ? 0 : Double(report.passedCount) / Double(report.evaluatedCount)
+        return VStack(spacing: EGuardSpacing.sm) {
+            RingGauge(progress: progress, tint: tint, lineWidth: 16, size: 170) {
+                VStack(spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text("\(report.passedCount)")
+                            .font(.system(size: 40, weight: .bold, design: .rounded))
+                            .foregroundStyle(EGuardColors.textPrimary)
+                        Text("/ \(report.evaluatedCount)")
+                            .font(EGuardTypography.title3)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
+                    Text(EGuardTheme.grade(passed: report.passedCount, total: report.evaluatedCount))
+                        .font(EGuardTypography.label)
+                        .foregroundStyle(tint)
+                }
+            }
+            .accessibilityLabel("Health score \(report.scoreText). \(report.summary)")
+            .accessibilityIdentifier("health.score")
+
             Text(report.summary)
-                .font(EGuardTypography.headline)
-            EGuardValueRow(label: "Last verified", value: report.generatedAt.verifiedDescription())
+                .font(EGuardTypography.callout)
+                .foregroundStyle(EGuardColors.textSecondary)
+            Text("Last verified \(report.generatedAt.verifiedDescription())")
+                .font(EGuardTypography.caption)
+                .foregroundStyle(EGuardColors.textSecondary)
         }
-        .accessibilityElement(children: .combine)
+        .frame(maxWidth: .infinity)
     }
 
     private func checksCard(_ report: ConfigurationHealthReport) -> some View {
@@ -95,32 +144,25 @@ struct HealthCheckView: View {
                 Button {
                     router.push(.featureDetail(check.feature))
                 } label: {
-                    HStack(alignment: .top, spacing: EGuardSpacing.sm) {
+                    HStack(alignment: .firstTextBaseline, spacing: EGuardSpacing.sm) {
                         Image(systemName: EGuardTheme.symbol(for: check.status))
                             .foregroundStyle(EGuardTheme.color(for: check.status))
                             .font(.title3)
-                        VStack(alignment: .leading, spacing: EGuardSpacing.xxs) {
-                            HStack {
-                                Text(check.feature.title)
-                                    .font(EGuardTypography.headline)
-                                    .foregroundStyle(EGuardColors.textPrimary)
-                                Spacer()
-                                HealthStatusBadge(status: check.status)
-                            }
-                            if let explanation = check.explanation {
-                                Text(explanation)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(check.feature.title)
+                                .font(EGuardTypography.label)
+                                .foregroundStyle(EGuardColors.textPrimary)
+                            if check.status != .pass, let remediation = check.remediation {
+                                Text(remediation)
                                     .font(EGuardTypography.caption)
                                     .foregroundStyle(EGuardColors.textSecondary)
                                     .multilineTextAlignment(.leading)
                             }
-                            if let remediation = check.remediation {
-                                Text(remediation)
-                                    .font(EGuardTypography.caption)
-                                    .foregroundStyle(EGuardColors.primary)
-                                    .multilineTextAlignment(.leading)
-                            }
                         }
+                        Spacer()
+                        HealthStatusBadge(status: check.status)
                     }
+                    .padding(.vertical, EGuardSpacing.xxs)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -137,6 +179,9 @@ struct HealthCheckView: View {
             Label(attention, systemImage: "exclamationmark.triangle.fill")
                 .font(EGuardTypography.headline)
                 .foregroundStyle(EGuardColors.warning)
+            Text("Tap a setting above to see what to do, or use the button below to start with the first one.")
+                .font(EGuardTypography.caption)
+                .foregroundStyle(EGuardColors.textSecondary)
             Button("Review") {
                 if let feature = viewModel.firstAttentionFeature {
                     router.push(.featureDetail(feature))
@@ -148,10 +193,24 @@ struct HealthCheckView: View {
     }
 }
 
+private struct HealthTitle: ViewModifier {
+    let isOnboarding: Bool
+
+    func body(content: Content) -> some View {
+        if isOnboarding {
+            content.brandNavigationTitle()
+        } else {
+            content
+                .navigationTitle("Configuration Health")
+                .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
 #Preview {
     NavigationStack {
         HealthCheckView(isOnboarding: true)
     }
-    .environment(AppModel.make(arguments: ["-uiTesting", "-setupComplete"]))
+    .environment(AppModel.preview())
     .environment(AppRouter())
 }

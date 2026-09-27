@@ -63,6 +63,9 @@ final class LocalStateRepository: EGuardStateRepository {
         static let selections = "protectionSelections"
         static let progress = "setupProgress"
         static let healthReport = "healthReport"
+        static let account = "userAccount"
+        static let alerts = "protectionAlerts"
+        static let preferences = "appPreferences"
     }
 
     private let secureStore: CodableStore
@@ -140,6 +143,40 @@ final class LocalStateRepository: EGuardStateRepository {
 
     func saveHealthReport(_ report: ConfigurationHealthReport) throws {
         try fileStore.save(report, forKey: Key.healthReport)
+    }
+
+    // MARK: AccountRepository
+
+    func loadAccount() throws -> UserAccount? {
+        try secureStore.load(UserAccount.self, forKey: Key.account)
+    }
+
+    func saveAccount(_ account: UserAccount) throws {
+        try secureStore.save(account, forKey: Key.account)
+    }
+
+    func deleteAccount() throws {
+        try secureStore.remove(forKey: Key.account)
+    }
+
+    // MARK: AlertsRepository
+
+    func loadAlerts() throws -> [ProtectionAlert]? {
+        try fileStore.load([ProtectionAlert].self, forKey: Key.alerts)
+    }
+
+    func saveAlerts(_ alerts: [ProtectionAlert]) throws {
+        try fileStore.save(alerts, forKey: Key.alerts)
+    }
+
+    // MARK: PreferencesRepository
+
+    func loadPreferences() throws -> AppPreferences? {
+        try fileStore.load(AppPreferences.self, forKey: Key.preferences)
+    }
+
+    func savePreferences(_ preferences: AppPreferences) throws {
+        try fileStore.save(preferences, forKey: Key.preferences)
     }
 
     // MARK: EGuardStateRepository

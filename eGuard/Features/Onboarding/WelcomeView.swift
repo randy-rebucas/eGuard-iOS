@@ -2,50 +2,59 @@ import SwiftUI
 
 /// 01 Welcome
 struct WelcomeView: View {
+    @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
 
     var body: some View {
         EGuardScreen {
+            EGuardWordmark(markSize: 30, showsTagline: true)
+                .frame(maxWidth: .infinity)
+                .padding(.top, EGuardSpacing.sm)
+
             OnboardingProgressIndicator(step: .welcome)
 
-            VStack(alignment: .leading, spacing: EGuardSpacing.lg) {
-                EGuardIllustration(symbolName: "shield.lefthalf.filled", size: 120)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, EGuardSpacing.lg)
-
-                Text("eGuard")
-                    .font(EGuardTypography.overline)
+            VStack(alignment: .leading, spacing: EGuardSpacing.md) {
+                Text("A safer digital world for their brighter tomorrow.")
+                    .font(.system(.title, design: .rounded, weight: .bold))
                     .foregroundStyle(EGuardColors.primary)
-                    .textCase(.uppercase)
+                    .accessibilityAddTraits(.isHeader)
+                Text("eGuard helps you configure, manage, and verify digital safety protections for your children's devices.")
+                    .font(EGuardTypography.body)
+                    .foregroundStyle(EGuardColors.textSecondary)
+            }
 
-                ScreenHeader(
-                    title: "Simple Digital Protection for Your Family",
-                    subtitle: "Set up your child's device with clear, age-appropriate protection."
-                )
+            FamilyIllustration(height: 260)
 
+            if model.isSignedIn, let account = model.account {
                 EGuardCard {
-                    Label("Set it up once.", systemImage: "1.circle.fill")
-                    Label("eGuard helps you configure the right protections.", systemImage: "2.circle.fill")
-                    Label("eGuard verifies that they are actually active.", systemImage: "3.circle.fill")
+                    Label("Signed in as \(account.fullName). Let's finish setting up your child's device.", systemImage: "person.crop.circle.badge.checkmark")
+                        .font(EGuardTypography.callout)
+                        .foregroundStyle(EGuardColors.textSecondary)
                 }
-                .font(EGuardTypography.callout)
-                .foregroundStyle(EGuardColors.textPrimary)
             }
         } actions: {
             Button("Get Started") {
-                router.push(.childDevice)
+                router.push(model.isSignedIn ? .childDevice : .createAccount)
             }
             .buttonStyle(.eGuardPrimary)
             .accessibilityIdentifier("welcome.getStarted")
 
-            Button("Already configured? Check my setup") {
-                router.push(.healthReview)
+            if model.isSignedIn {
+                Button("Already configured? Check my setup") {
+                    router.push(.healthReview)
+                }
+                .buttonStyle(.eGuardText)
+                .accessibilityIdentifier("welcome.checkSetup")
+            } else {
+                Button("I already have an account") {
+                    router.push(.signIn)
+                }
+                .buttonStyle(.eGuardText)
+                .accessibilityIdentifier("welcome.signIn")
             }
-            .buttonStyle(.eGuardText)
-            .accessibilityIdentifier("welcome.checkSetup")
         }
+        .background(EGuardColors.heroGradient.ignoresSafeArea())
         .navigationTitle(OnboardingStep.welcome.title)
-        .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
     }
 }

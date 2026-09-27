@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 05 Configure Settings. Also reused as "Manage Protection" from the dashboard.
+/// 07 Configure Settings, shown as a numbered step list. Also reused as "Manage Protection".
 struct ConfigureSettingsView: View {
     let isOnboarding: Bool
 
@@ -9,18 +9,25 @@ struct ConfigureSettingsView: View {
 
     private var features: [ProtectionFeature] { model.settings.enabledFeatures }
 
+    /// The first step that is not finished is highlighted as the current one.
+    private var currentFeature: ProtectionFeature? {
+        features.first { !model.progress.state(for: $0).isComplete }
+    }
+
     var body: some View {
         EGuardScreen {
             if isOnboarding {
                 OnboardingProgressIndicator(step: .configureSettings)
             }
             ScreenHeader(
-                title: "Configure Settings",
-                subtitle: "\(model.progress.completedCount(of: features)) of \(features.count) protections configured."
+                title: isOnboarding ? "Configure settings" : "Protection & Controls",
+                subtitle: isOnboarding
+                    ? "We'll guide you step-by-step and verify each setting."
+                    : "\(model.progress.completedCount(of: features)) of \(features.count) protections configured."
             )
 
             if !model.authorizationStatus.isAuthorized {
-                authorizationCard
+                authorizationStep
             }
 
             if model.environment.isSimulator {
@@ -31,22 +38,26 @@ struct ConfigureSettingsView: View {
                 }
             }
 
-            ForEach(features) { feature in
-                FeatureCard(
-                    feature: feature,
-                    summary: model.settings.summary(for: feature),
-                    state: model.progress.state(for: feature),
-                    capability: model.capability(for: feature)
-                ) {
-                    router.push(.featureDetail(feature))
-                }
-            }
-
             if features.isEmpty {
                 EGuardCard {
                     Text("No protections are turned on. Go back to Recommended Setup to choose some.")
                         .font(EGuardTypography.callout)
                         .foregroundStyle(EGuardColors.textSecondary)
+                }
+            } else {
+                VStack(spacing: EGuardSpacing.xs) {
+                    ForEach(Array(features.enumerated()), id: \.element) { index, feature in
+                        SetupStepRow(
+                            number: index + 1,
+                            feature: feature,
+                            summary: model.settings.summary(for: feature),
+                            state: model.progress.state(for: feature),
+                            capability: model.capability(for: feature),
+                            isCurrent: feature == currentFeature
+                        ) {
+                            router.push(.featureDetail(feature))
+                        }
+                    }
                 }
             }
         } actions: {
@@ -62,26 +73,144 @@ struct ConfigureSettingsView: View {
                 }
                 .buttonStyle(.eGuardPrimary)
                 .accessibilityIdentifier("configure.checkConfiguration")
+                Button("Change recommended values") {
+                    router.push(.recommendedSetup)
+                }
+                .buttonStyle(.eGuardText)
             }
         }
-        .navigationTitle(isOnboarding ? OnboardingStep.configureSettings.title : "Manage Protection")
-        .navigationBarTitleDisplayMode(.inline)
+        .modifier(ConfigureTitle(isOnboarding: isOnboarding))
         .onAppear { model.refreshAuthorization() }
     }
 
-    private var authorizationCard: some View {
-        EGuardCard {
-            Label("eGuard needs your permission", systemImage: "hand.raised.fill")
-                .font(EGuardTypography.headline)
-            Text("Automatic settings can only be applied after you grant Family Controls authorization.")
-                .font(EGuardTypography.callout)
-                .foregroundStyle(EGuardColors.textSecondary)
-            Button("Continue") {
-                router.push(.authorization)
+    private var authorizationStep: some View {
+        Button {
+            router.push(.authorization)
+        } label: {
+            HStack(spacing: EGuardSpacing.sm) {
+                StepNumber(number: 0, symbol: "hand.raised.fill", isCurrent: true, isDone: false)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Set up supervision")
+                        .font(EGuardTypography.label)
+                        .foregroundStyle(EGuardColors.textPrimary)
+                    Text("Grant Family Controls authorization")
+                        .font(EGuardTypography.caption)
+                        .foregroundStyle(EGuardColors.textSecondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(EGuardColors.neutral)
             }
-            .buttonStyle(.eGuardSecondary)
-            .accessibilityIdentifier("configure.authorize")
+            .padding(EGuardSpacing.sm)
+            .background(EGuardColors.primarySoft, in: EGuardShapes.card)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("configure.authorize")
+    }
+}
+
+private struct ConfigureTitle: ViewModifier {
+    let isOnboarding: Bool
+
+    func body(content: Content) -> some View {
+        if isOnboarding {
+            content.brandNavigationTitle()
+        } else {
+            content
+                .navigationTitle("Manage Protection")
+                .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
+/// One numbered step in the configuration list.
+struct SetupStepRow: View {
+    let number: Int
+    let feature: ProtectionFeature
+    let summary: String
+    let state: FeatureConfigurationState
+    let capability: ProtectionCapability
+    let isCurrent: Bool
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: EGuardSpacing.sm) {
+                StepNumber(number: number, symbol: nil, isCurrent: isCurrent, isDone: state.isComplete)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(feature.title)
+                        .font(EGuardTypography.label)
+                        .foregroundStyle(EGuardColors.textPrimary)
+                    Text(detail)
+                        .font(EGuardTypography.caption)
+                        .foregroundStyle(detailColor)
+                }
+                Spacer(minLength: EGuardSpacing.xs)
+                if capability.mode != .automatic {
+                    ModeBadge(mode: capability.mode)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(EGuardColors.neutral)
+            }
+            .padding(EGuardSpacing.sm)
+            .background(isCurrent ? EGuardColors.primarySoft : EGuardColors.surface, in: EGuardShapes.card)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(state.statusLabel)
+        .accessibilityIdentifier("configure.feature.\(feature.rawValue)")
+    }
+
+    private var detail: String {
+        switch state {
+        case .configured, .confirmedByParent: summary
+        case .failed: "Could not configure – tap to retry"
+        case .awaitingReturn: "Finish in Settings, then confirm"
+        case .skipped: "Skipped for now"
+        case .notConfigured: isCurrent ? "Set \(summary.lowercased())" : summary
+        }
+    }
+
+    private var detailColor: Color {
+        switch state {
+        case .failed: EGuardColors.danger
+        case .awaitingReturn: EGuardColors.warning
+        default: EGuardColors.textSecondary
+        }
+    }
+}
+
+/// The numbered circle at the start of a step row.
+struct StepNumber: View {
+    let number: Int
+    let symbol: String?
+    let isCurrent: Bool
+    let isDone: Bool
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(isDone || isCurrent ? EGuardColors.primary : EGuardColors.primary.opacity(0.12))
+            if isDone {
+                Image(systemName: "checkmark")
+                    .font(.footnote.weight(.bold))
+                    .foregroundStyle(.white)
+            } else if let symbol {
+                Image(systemName: symbol)
+                    .font(.footnote.weight(.bold))
+                    .foregroundStyle(.white)
+            } else {
+                Text("\(number)")
+                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                    .foregroundStyle(isCurrent ? .white : EGuardColors.primary)
+            }
+        }
+        .frame(width: 32, height: 32)
+        .accessibilityHidden(true)
     }
 }
 
@@ -112,10 +241,8 @@ struct FeatureCard: View {
             }
             Button(buttonTitle, action: onConfigure)
                 .buttonStyle(state.isComplete ? AnyButtonStyle(.eGuardSecondary) : AnyButtonStyle(.eGuardPrimary))
-                .accessibilityIdentifier("configure.feature.\(feature.rawValue)")
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("configure.card.\(feature.rawValue)")
     }
 
     private var buttonTitle: String {

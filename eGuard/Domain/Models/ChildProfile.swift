@@ -78,17 +78,26 @@ nonisolated struct ChildProfile: Codable, Equatable, Sendable {
     var age: Int
     var device: DevicePlatform
     var relationship: FamilyRelationshipStatus
+    /// A small JPEG chosen by the parent. Optional so older saved profiles still decode.
+    var photoData: Data?
 
     init(
         name: String = "",
         age: Int = 12,
         device: DevicePlatform = .iPhone,
-        relationship: FamilyRelationshipStatus = .childInFamilySharing
+        relationship: FamilyRelationshipStatus = .childInFamilySharing,
+        photoData: Data? = nil
     ) {
         self.name = name
         self.age = age
         self.device = device
         self.relationship = relationship
+        self.photoData = photoData
+    }
+
+    /// "Mia's iPhone", used wherever the mockup names the device.
+    var deviceName: String {
+        trimmedName.isEmpty ? device.displayName : "\(trimmedName)'s \(device.displayName)"
     }
 
     var trimmedName: String {

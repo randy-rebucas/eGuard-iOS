@@ -137,23 +137,21 @@ struct ModeBadge: View {
 
 // MARK: - Layout helpers
 
-/// Step indicator shown on every onboarding screen: "Step 2 of 7" plus segment bars.
+/// Thin progress bar shown under the logo on every onboarding screen.
 struct OnboardingProgressIndicator: View {
     let step: OnboardingStep
 
     var body: some View {
-        VStack(alignment: .leading, spacing: EGuardSpacing.xs) {
-            Text("Step \(step.rawValue) of \(OnboardingStep.count)")
-                .font(EGuardTypography.overline)
-                .foregroundStyle(EGuardColors.textSecondary)
-            HStack(spacing: EGuardSpacing.xxs) {
-                ForEach(OnboardingStep.allCases) { candidate in
-                    Capsule()
-                        .fill(candidate.rawValue <= step.rawValue ? EGuardColors.primary : EGuardColors.divider)
-                        .frame(height: 4)
-                }
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(EGuardColors.primary.opacity(0.15))
+                Capsule()
+                    .fill(EGuardColors.primary)
+                    .frame(width: proxy.size.width * CGFloat(step.rawValue) / CGFloat(OnboardingStep.count))
+                    .animation(.easeOut(duration: 0.4), value: step)
             }
         }
+        .frame(height: 5)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Step \(step.rawValue) of \(OnboardingStep.count), \(step.title)")
         .accessibilityIdentifier("onboarding.progress.\(step.rawValue)")
@@ -168,7 +166,7 @@ struct ScreenHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: EGuardSpacing.xs) {
             Text(title)
-                .font(EGuardTypography.display)
+                .font(EGuardTypography.screenTitle)
                 .foregroundStyle(EGuardColors.textPrimary)
                 .accessibilityAddTraits(.isHeader)
             if let subtitle {
@@ -197,42 +195,39 @@ struct EGuardIllustration: View {
     }
 }
 
-/// A radio-style option row used for profiles and other single choices.
+/// A selectable card with a tinted icon tile and a check mark, used for profiles and other single choices.
 struct SelectableOptionRow: View {
     let title: String
     let subtitle: String
     var symbolName: String? = nil
+    var tint: Color = EGuardColors.primary
     let isSelected: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(alignment: .top, spacing: EGuardSpacing.sm) {
-                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-                    .font(.title3)
-                    .foregroundStyle(isSelected ? EGuardColors.primary : EGuardColors.neutral)
-                    .padding(.top, 2)
+            HStack(alignment: .center, spacing: EGuardSpacing.sm) {
+                if let symbolName {
+                    IconTile(symbolName: symbolName, tint: tint, size: 40)
+                }
                 VStack(alignment: .leading, spacing: EGuardSpacing.xxs) {
-                    HStack(spacing: EGuardSpacing.xs) {
-                        if let symbolName {
-                            Image(systemName: symbolName)
-                                .foregroundStyle(EGuardColors.primary)
-                        }
-                        Text(title)
-                            .font(EGuardTypography.headline)
-                            .foregroundStyle(EGuardColors.textPrimary)
-                    }
+                    Text(title)
+                        .font(EGuardTypography.headline)
+                        .foregroundStyle(EGuardColors.textPrimary)
                     Text(subtitle)
-                        .font(EGuardTypography.callout)
+                        .font(EGuardTypography.caption)
                         .foregroundStyle(EGuardColors.textSecondary)
                         .multilineTextAlignment(.leading)
                 }
                 Spacer(minLength: 0)
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? EGuardColors.primary : EGuardColors.divider)
             }
-            .padding(EGuardSpacing.md)
-            .background(EGuardColors.surface, in: EGuardShapes.card)
+            .padding(EGuardSpacing.sm)
+            .background(isSelected ? EGuardColors.primarySoft : EGuardColors.surface, in: EGuardShapes.card)
             .overlay(
-                EGuardShapes.card.strokeBorder(isSelected ? EGuardColors.primary : .clear, lineWidth: 2)
+                EGuardShapes.card.strokeBorder(isSelected ? EGuardColors.primary : .clear, lineWidth: 1.5)
             )
         }
         .buttonStyle(.plain)
@@ -264,8 +259,16 @@ struct EGuardValueRow: View {
 struct EGuardScreen<Content: View, Actions: View>: View {
     private let content: Content
     private let actions: Actions
+    private let showsActionBackground: Bool
 
-    init(@ViewBuilder content: () -> Content, @ViewBuilder actions: () -> Actions) {
+    /// Pass `showsActionBackground: false` for light footers such as "Already have an account?"
+    /// that should sit directly on the page instead of on a bar.
+    init(
+        showsActionBackground: Bool = true,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder actions: () -> Actions
+    ) {
+        self.showsActionBackground = showsActionBackground
         self.content = content()
         self.actions = actions()
     }
@@ -287,8 +290,14 @@ struct EGuardScreen<Content: View, Actions: View>: View {
             }
             .padding(.horizontal, EGuardSpacing.md)
             .padding(.vertical, EGuardSpacing.sm)
-            .background(.bar)
+            .background {
+                if showsActionBackground {
+                    Rectangle().fill(.bar)
+                }
+            }
         }
+        // Actions stay pinned above the home indicator instead of riding up on the keyboard.
+        .ignoresSafeArea(.keyboard, edges: .bottom)
     }
 }
 

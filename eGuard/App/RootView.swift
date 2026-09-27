@@ -1,26 +1,33 @@
 import SwiftUI
 
-/// Hosts the single NavigationStack. Onboarding starts at Welcome; a finished setup starts at the dashboard.
+/// Hosts the splash and the single NavigationStack.
+/// A signed-in parent with a finished setup starts in the tabbed app; everyone else starts at Welcome.
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
     @State private var router = AppRouter()
+    @State private var isShowingSplash = true
 
     var body: some View {
-        NavigationStack(path: $router.path) {
-            Group {
-                if model.isSetupComplete {
-                    DashboardView()
-                } else {
-                    WelcomeView()
-                }
-            }
-            .navigationDestination(for: AppRoute.self) { route in
-                destination(for: route)
+        ZStack {
+            if isShowingSplash && !model.skipsSplash {
+                SplashView()
+                    .transition(.opacity)
+                    .zIndex(1)
+            } else {
+                navigationStack
+                    .transition(.opacity)
             }
         }
-        .environment(router)
-        .tint(EGuardColors.primary)
+        .animation(.easeInOut(duration: 0.45), value: isShowingSplash)
+        .task {
+            guard !model.skipsSplash else {
+                isShowingSplash = false
+                return
+            }
+            try? await Task.sleep(for: .seconds(1.6))
+            isShowingSplash = false
+        }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             // Authorization and settings can change outside the app, so verify on every return.
@@ -31,9 +38,28 @@ struct RootView: View {
         }
     }
 
+    private var navigationStack: some View {
+        NavigationStack(path: $router.path) {
+            Group {
+                if model.isSetupComplete && model.isSignedIn {
+                    MainTabView()
+                } else {
+                    WelcomeView()
+                }
+            }
+            .navigationDestination(for: AppRoute.self) { route in
+                destination(for: route)
+            }
+        }
+        .environment(router)
+        .tint(EGuardColors.primary)
+    }
+
     @ViewBuilder
     private func destination(for route: AppRoute) -> some View {
         switch route {
+        case .createAccount: CreateAccountView()
+        case .signIn: SignInView()
         case .childDevice: ChildDeviceView()
         case .protectionProfile: ProtectionProfileView()
         case .recommendedSetup: RecommendedSetupView()
@@ -42,9 +68,20 @@ struct RootView: View {
         case .complete: CompleteView()
         case .manageProtection: ConfigureSettingsView(isOnboarding: false)
         case .healthReview: HealthCheckView(isOnboarding: false)
-        case .settings: SettingsView()
         case .authorization: AuthorizationView()
         case .featureDetail(let feature): FeatureConfigurationView(feature: feature)
+        case .childProfile: ChildProfileView()
+        case .screenTime: ScreenTimeView()
+        case .appsManagement: AppsManagementView()
+        case .location: LocationView()
+        case .alerts: AlertsView(isRoot: false)
+        case .settings: SettingsView(isRoot: false)
+        case .account: AccountView()
+        case .notifications: NotificationsView()
+        case .privacy: PrivacyView()
+        case .about: AboutView()
+        case .subscription: SubscriptionView()
+        case .helpSupport: HelpSupportView()
         }
     }
 }
@@ -56,5 +93,5 @@ struct RootView: View {
 
 #Preview("Dashboard") {
     RootView()
-        .environment(AppModel.make(arguments: ["-uiTesting", "-setupComplete"]))
+        .environment(AppModel.preview())
 }

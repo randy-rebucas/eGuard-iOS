@@ -22,16 +22,24 @@ final class AppModel {
 
     // MARK: State
 
+    private(set) var account: UserAccount?
     private(set) var childProfile: ChildProfile?
     private(set) var settings: ProtectionSettings
     private(set) var selections: ProtectionSelections
     private(set) var progress: SetupProgress
     private(set) var lastHealthReport: ConfigurationHealthReport?
     private(set) var authorizationStatus: ParentalControlAuthorizationStatus
+    private(set) var alerts: [ProtectionAlert]
+    private(set) var preferences: AppPreferences
     private(set) var persistenceError: String?
+
+    /// Whether the launch splash should be skipped, e.g. under UI tests.
+    let skipsSplash: Bool
 
     var isOnline: Bool { network?.isOnline ?? true }
     var isSetupComplete: Bool { progress.isSetupComplete }
+    var isSignedIn: Bool { account != nil }
+    var unreadAlertCount: Int { alerts.filter { !$0.isRead }.count }
 
     // MARK: Init
 
@@ -42,7 +50,8 @@ final class AppModel {
         systemSettings: SystemSettingsService,
         repository: EGuardStateRepository,
         environment: PlatformEnvironment,
-        network: NetworkMonitor? = nil
+        network: NetworkMonitor? = nil,
+        skipsSplash: Bool = false
     ) {
         self.authorization = authorization
         self.restrictions = restrictions
@@ -51,6 +60,7 @@ final class AppModel {
         self.repository = repository
         self.environment = environment
         self.network = network
+        self.skipsSplash = skipsSplash
         self.capabilityResolver = CapabilityResolver(environment: environment)
         self.applyProtection = ApplyProtectionUseCase(
             restrictions: restrictions,
@@ -65,11 +75,14 @@ final class AppModel {
             capabilities: capabilityResolver
         )
 
+        account = try? repository.loadAccount()
         childProfile = try? repository.loadChildProfile()
         settings = (try? repository.loadSettings()) ?? .off
         selections = (try? repository.loadSelections()) ?? ProtectionSelections()
         progress = (try? repository.loadProgress()) ?? SetupProgress()
         lastHealthReport = try? repository.loadHealthReport()
+        alerts = (try? repository.loadAlerts()) ?? []
+        preferences = (try? repository.loadPreferences()) ?? AppPreferences()
         authorizationStatus = authorization.authorizationStatus
     }
 
@@ -80,7 +93,8 @@ final class AppModel {
         if arguments.contains("-uiTesting") {
             let model = mock(
                 authorizationStatus: arguments.contains("-setupComplete") ? .approved : .notDetermined,
-                authorizationBehavior: arguments.contains("-denyAuthorization") ? .deny : .approve
+                authorizationBehavior: arguments.contains("-denyAuthorization") ? .deny : .approve,
+                skipsSplash: true
             )
             if arguments.contains("-setupComplete") {
                 model.seedCompletedSetup()
@@ -114,7 +128,8 @@ final class AppModel {
     static func mock(
         authorizationStatus: ParentalControlAuthorizationStatus = .notDetermined,
         authorizationBehavior: MockAuthorizationService.Behavior = .approve,
-        environment: PlatformEnvironment = .iPhone
+        environment: PlatformEnvironment = .iPhone,
+        skipsSplash: Bool = true
     ) -> AppModel {
         AppModel(
             authorization: MockAuthorizationService(status: authorizationStatus, behavior: authorizationBehavior),
@@ -122,8 +137,60 @@ final class AppModel {
             schedules: MockActivityScheduleService(),
             systemSettings: SystemSettingsOpener(),
             repository: LocalStateRepository.inMemory(),
-            environment: environment
+            environment: environment,
+            skipsSplash: skipsSplash
         )
+    }
+
+    /// A signed-in, fully configured model for previews of the main app.
+    static func preview() -> AppModel {
+        let model = make(arguments: ["-uiTesting", "-setupComplete"])
+        return model
+    }
+
+    // MARK: Account
+
+    func createAccount(_ newAccount: UserAccount) {
+        account = newAccount
+        persist { try repository.saveAccount(newAccount) }
+    }
+
+    /// Signs in against the account stored on this device.
+    func signIn(email: String, password: String) throws {
+        guard let stored = try? repository.loadAccount() else { throw AccountError.noAccount }
+        guard stored.normalizedEmail == email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+            throw AccountError.emailMismatch
+        }
+        if stored.provider == .email {
+            guard stored.verify(password: password) else { throw AccountError.wrongPassword }
+        }
+        account = stored
+    }
+
+    /// Signs in with a third-party identity. Reuses the stored account when the email matches.
+    func signIn(provider: AccountProvider, fullName: String?, email: String?) {
+        if let stored = try? repository.loadAccount(),
+           stored.provider == provider || stored.normalizedEmail == email?.lowercased() {
+            account = stored
+            return
+        }
+        let name = fullName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = (name?.isEmpty == false ? name : nil) ?? "Parent"
+        let resolvedEmail = email ?? "Hidden by \(provider.title)"
+        createAccount(UserAccount(fullName: resolvedName, email: resolvedEmail, provider: provider))
+    }
+
+    func updateAccount(fullName: String, email: String) {
+        guard var current = account else { return }
+        current.fullName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        current.email = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        account = current
+        persist { try repository.saveAccount(current) }
+    }
+
+    /// Signs out but keeps the child's protections and profile on the device.
+    func signOut() {
+        account = nil
     }
 
     // MARK: Child
@@ -201,6 +268,9 @@ final class AppModel {
         lastHealthReport = report
         authorizationStatus = authorization.authorizationStatus
         persist { try repository.saveHealthReport(report) }
+        if isSetupComplete {
+            recordAlerts(from: report)
+        }
         return report
     }
 
@@ -208,17 +278,81 @@ final class AppModel {
         progress.isSetupComplete = true
         progress.completedAt = .now
         persist { try repository.saveProgress(progress) }
+        addAlert(ProtectionAlert(
+            category: .protection,
+            title: "Setup complete",
+            detail: "\(childProfile?.deviceName ?? "The device") is protected with the \(settings.profile.title) profile.",
+            isRead: true
+        ))
     }
 
-    /// Removes every protection and forgets all local data.
+    /// Removes every protection and forgets all local data, including the account.
     func resetEverything() {
         applyProtection.removeAllProtections()
+        account = nil
         childProfile = nil
         settings = .off
         selections = ProtectionSelections()
         progress = SetupProgress()
         lastHealthReport = nil
+        alerts = []
+        preferences = AppPreferences()
         persist { try repository.eraseAll() }
+    }
+
+    // MARK: Alerts
+
+    func addAlert(_ alert: ProtectionAlert) {
+        alerts = AlertGenerator.merge([alert], into: alerts)
+        persist { try repository.saveAlerts(alerts) }
+    }
+
+    private func recordAlerts(from report: ConfigurationHealthReport) {
+        let generated = AlertGenerator.alerts(from: report, deviceName: childProfile?.deviceName ?? "this device")
+        let merged = AlertGenerator.merge(generated, into: alerts)
+        guard merged != alerts else { return }
+        alerts = merged
+        persist { try repository.saveAlerts(alerts) }
+    }
+
+    func markAllAlertsRead() {
+        guard alerts.contains(where: { !$0.isRead }) else { return }
+        alerts = alerts.map { alert in
+            var copy = alert
+            copy.isRead = true
+            return copy
+        }
+        persist { try repository.saveAlerts(alerts) }
+    }
+
+    func clearAlerts() {
+        alerts = []
+        persist { try repository.saveAlerts(alerts) }
+    }
+
+    // MARK: Preferences
+
+    func updatePreferences(_ change: (inout AppPreferences) -> Void) {
+        var copy = preferences
+        change(&copy)
+        guard copy != preferences else { return }
+        preferences = copy
+        persist { try repository.savePreferences(copy) }
+    }
+
+    func setLocationSharing(_ enabled: Bool) {
+        let wasEnabled = preferences.isLocationSharingEnabled
+        updatePreferences { $0.isLocationSharingEnabled = enabled }
+        guard wasEnabled != enabled else { return }
+        addAlert(ProtectionAlert(
+            category: .location,
+            title: enabled ? "Location sharing turned on" : "Location sharing turned off",
+            detail: childProfile?.deviceName ?? "This device"
+        ))
+    }
+
+    func recordVisit(_ visit: LocationVisit) {
+        updatePreferences { $0.recordVisit(visit) }
     }
 
     // MARK: Authorization
@@ -248,8 +382,9 @@ final class AppModel {
         }
     }
 
-    /// Seeds a finished Balanced setup so UI tests can open the dashboard directly.
+    /// Seeds a signed-in parent with a finished Balanced setup so UI tests and previews open the dashboard directly.
     private func seedCompletedSetup() {
+        createAccount(UserAccount(fullName: "Randy Cruz", email: "randy@example.com"))
         saveChildProfile(ChildProfile(name: "Mia", age: 12, device: .iPhone, relationship: .childInFamilySharing))
         chooseProfile(.balanced)
         for feature in settings.enabledFeatures {
@@ -259,7 +394,13 @@ final class AppModel {
             default: break
             }
         }
-        performHealthCheck()
         completeSetup()
+        performHealthCheck()
+        addAlert(ProtectionAlert(
+            category: .apps,
+            title: "New app installed",
+            detail: "Ask to Buy request on \(childProfile?.deviceName ?? "the device")",
+            date: Date.now.addingTimeInterval(-3 * 3600)
+        ))
     }
 }

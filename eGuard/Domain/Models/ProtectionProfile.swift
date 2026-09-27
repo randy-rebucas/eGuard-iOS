@@ -26,9 +26,9 @@ nonisolated enum ProtectionProfile: String, Codable, CaseIterable, Identifiable,
 
     var symbolName: String {
         switch self {
-        case .balanced: "scale.3d"
-        case .protected: "shield.checkered"
-        case .custom: "slider.horizontal.3"
+        case .balanced: "scalemass.fill"
+        case .protected: "checkmark.shield.fill"
+        case .custom: "gearshape.fill"
         }
     }
 }

@@ -57,33 +57,24 @@ struct RecommendedSetupView: View {
         @Bindable var viewModel = viewModel
 
         EGuardScreen {
-            OnboardingProgressIndicator(step: .recommendedSetup)
+            if !model.isSetupComplete {
+                OnboardingProgressIndicator(step: .recommendedSetup)
+            }
             ScreenHeader(
-                title: "Your Recommended Setup",
-                subtitle: "Based on the \(viewModel.draft.profile.title) profile. Tap any setting to change it."
+                title: "Your recommended setup",
+                subtitle: subtitle
             )
 
             EGuardCard {
                 ForEach(ProtectionFeature.recommendedSetupOrder) { feature in
-                    Button {
+                    EGuardNavRow(
+                        title: rowTitle(for: feature),
+                        subtitle: viewModel.draft.summary(for: feature),
+                        symbolName: feature.symbolName,
+                        tint: EGuardTheme.tint(for: feature)
+                    ) {
                         viewModel.editingFeature = feature
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: EGuardSpacing.xxs) {
-                                Text(feature.title)
-                                    .font(EGuardTypography.label)
-                                    .foregroundStyle(EGuardColors.textSecondary)
-                                Text(viewModel.draft.summary(for: feature))
-                                    .font(EGuardTypography.headline)
-                                    .foregroundStyle(EGuardColors.textPrimary)
-                            }
-                            Spacer()
-                            Image(systemName: "pencil.circle")
-                                .foregroundStyle(EGuardColors.primary)
-                        }
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
                     .accessibilityIdentifier("recommended.edit.\(feature.rawValue)")
                     if feature != ProtectionFeature.recommendedSetupOrder.last {
                         Divider()
@@ -92,21 +83,22 @@ struct RecommendedSetupView: View {
             }
 
             VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
-                Text("More protections")
-                    .font(EGuardTypography.overline)
-                    .foregroundStyle(EGuardColors.textSecondary)
+                SectionHeader(title: "More protections")
                 EGuardCard {
                     ForEach(viewModel.moreProtections) { feature in
                         Toggle(isOn: Binding(
                             get: { viewModel.binding(for: feature) },
                             set: { viewModel.setEnabled($0, for: feature) }
                         )) {
-                            VStack(alignment: .leading, spacing: EGuardSpacing.xxs) {
-                                Text(feature.title)
-                                    .font(EGuardTypography.label)
-                                Text(feature.shortDescription)
-                                    .font(EGuardTypography.caption)
-                                    .foregroundStyle(EGuardColors.textSecondary)
+                            HStack(spacing: EGuardSpacing.sm) {
+                                IconTile(symbolName: feature.symbolName, tint: EGuardTheme.tint(for: feature))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(feature.title)
+                                        .font(EGuardTypography.label)
+                                    Text(feature.shortDescription)
+                                        .font(EGuardTypography.caption)
+                                        .foregroundStyle(EGuardColors.textSecondary)
+                                }
                             }
                         }
                         .tint(EGuardColors.primary)
@@ -118,19 +110,37 @@ struct RecommendedSetupView: View {
                 }
             }
         } actions: {
-            Button("Review Setup") {
+            Button(model.isSetupComplete ? "Save & Configure" : "Review & Configure") {
                 viewModel.save(to: model)
-                router.push(.configureSettings)
+                router.push(model.isSetupComplete ? .manageProtection : .configureSettings)
             }
             .buttonStyle(.eGuardPrimary)
             .accessibilityIdentifier("recommended.reviewSetup")
         }
-        .navigationTitle(OnboardingStep.recommendedSetup.title)
-        .navigationBarTitleDisplayMode(.inline)
+        .brandNavigationTitle()
         .onAppear { viewModel.load(from: model) }
         .sheet(item: $viewModel.editingFeature) { feature in
             FeatureEditorSheet(feature: feature, settings: $viewModel.draft)
                 .presentationDetents([.medium, .large])
+        }
+    }
+
+    private var subtitle: String {
+        if let child = model.childProfile {
+            return "Based on \(child.trimmedName)'s age, here are the suggested settings."
+        }
+        return "Based on the \(viewModel.draft.profile.title) profile, here are the suggested settings."
+    }
+
+    /// Row titles follow the mockup's everyday wording.
+    private func rowTitle(for feature: ProtectionFeature) -> String {
+        switch feature {
+        case .downtime: "Bedtime"
+        case .gaming: "Gaming time"
+        case .socialApps: "Social apps time"
+        case .webContent: "Explicit content"
+        case .appInstallation: "App downloads"
+        default: feature.title
         }
     }
 }

@@ -31,9 +31,29 @@ protocol HealthReportRepository: AnyObject {
     func saveHealthReport(_ report: ConfigurationHealthReport) throws
 }
 
+@MainActor
+protocol AccountRepository: AnyObject {
+    func loadAccount() throws -> UserAccount?
+    func saveAccount(_ account: UserAccount) throws
+    func deleteAccount() throws
+}
+
+@MainActor
+protocol AlertsRepository: AnyObject {
+    func loadAlerts() throws -> [ProtectionAlert]?
+    func saveAlerts(_ alerts: [ProtectionAlert]) throws
+}
+
+@MainActor
+protocol PreferencesRepository: AnyObject {
+    func loadPreferences() throws -> AppPreferences?
+    func savePreferences(_ preferences: AppPreferences) throws
+}
+
 /// Everything eGuard persists locally. One object implements all repositories.
 @MainActor
 protocol EGuardStateRepository: ChildProfileRepository, ProtectionSettingsRepository,
-    ProtectionSelectionsRepository, SetupProgressRepository, HealthReportRepository {
+    ProtectionSelectionsRepository, SetupProgressRepository, HealthReportRepository,
+    AccountRepository, AlertsRepository, PreferencesRepository {
     func eraseAll() throws
 }
