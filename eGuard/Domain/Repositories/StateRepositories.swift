@@ -32,13 +32,6 @@ protocol HealthReportRepository: AnyObject {
 }
 
 @MainActor
-protocol AccountRepository: AnyObject {
-    func loadAccount() throws -> UserAccount?
-    func saveAccount(_ account: UserAccount) throws
-    func deleteAccount() throws
-}
-
-@MainActor
 protocol AlertsRepository: AnyObject {
     func loadAlerts() throws -> [ProtectionAlert]?
     func saveAlerts(_ alerts: [ProtectionAlert]) throws
@@ -54,6 +47,6 @@ protocol PreferencesRepository: AnyObject {
 @MainActor
 protocol EGuardStateRepository: ChildProfileRepository, ProtectionSettingsRepository,
     ProtectionSelectionsRepository, SetupProgressRepository, HealthReportRepository,
-    AccountRepository, AlertsRepository, PreferencesRepository {
+    AlertsRepository, PreferencesRepository {
     func eraseAll() throws
 }

@@ -63,7 +63,6 @@ final class LocalStateRepository: EGuardStateRepository {
         static let selections = "protectionSelections"
         static let progress = "setupProgress"
         static let healthReport = "healthReport"
-        static let account = "userAccount"
         static let alerts = "protectionAlerts"
         static let preferences = "appPreferences"
     }
@@ -143,20 +142,6 @@ final class LocalStateRepository: EGuardStateRepository {
 
     func saveHealthReport(_ report: ConfigurationHealthReport) throws {
         try fileStore.save(report, forKey: Key.healthReport)
-    }
-
-    // MARK: AccountRepository
-
-    func loadAccount() throws -> UserAccount? {
-        try secureStore.load(UserAccount.self, forKey: Key.account)
-    }
-
-    func saveAccount(_ account: UserAccount) throws {
-        try secureStore.save(account, forKey: Key.account)
-    }
-
-    func deleteAccount() throws {
-        try secureStore.remove(forKey: Key.account)
     }
 
     // MARK: AlertsRepository

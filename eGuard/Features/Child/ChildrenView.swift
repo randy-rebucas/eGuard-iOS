@@ -1,11 +1,10 @@
 import SwiftUI
 
-/// Children tab. eGuard protects the child who uses this device, so the list holds one profile.
+/// Children tab, from `GET /children`.
 struct ChildrenView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
-
-    private var state: ProtectionState { model.lastHealthReport?.protectionState ?? .notConfigured }
+    @State private var state: LoadState<[ChildSummary]> = .loading
 
     var body: some View {
         TabScreen {
@@ -13,72 +12,72 @@ struct ChildrenView: View {
                 EmptyView()
             } trailing: {
                 Button {
-                    router.push(.childDevice)
+                    router.push(.addChild)
                 } label: {
-                    Image(systemName: model.childProfile == nil ? "plus" : "pencil")
+                    Image(systemName: "plus")
                         .font(.body.weight(.semibold))
                 }
-                .accessibilityLabel(model.childProfile == nil ? "Add child" : "Edit child")
+                .accessibilityLabel("Add child")
+                .accessibilityIdentifier("children.add")
             }
         } content: {
-            if let child = model.childProfile {
-                Button {
-                    router.push(.childProfile)
-                } label: {
-                    EGuardCard {
-                        HStack(spacing: EGuardSpacing.md) {
-                            AvatarView(name: child.trimmedName, imageData: child.photoData, size: 64)
-                            VStack(alignment: .leading, spacing: EGuardSpacing.xxs) {
-                                Text(child.trimmedName)
-                                    .font(EGuardTypography.title3)
-                                    .foregroundStyle(EGuardColors.textPrimary)
-                                Text("\(child.ageDescription) · \(child.deviceName)")
+            switch state {
+            case .loading:
+                LoadingCard()
+            case .failed(let message):
+                ErrorCard(message: message) { Task { await loadChildren() } }
+            case .loaded(let children):
+                if children.isEmpty {
+                    EmptyStateView(symbolName: "person.crop.circle.badge.plus", title: "No children yet", message: "Add a child to start protecting their devices.")
+                    Button("Add Child") { router.push(.addChild) }
+                        .buttonStyle(.eGuardPrimary)
+                }
+                ForEach(children) { child in
+                    Button {
+                        router.push(.childProfile(childId: child.id))
+                    } label: {
+                        EGuardCard {
+                            HStack(spacing: EGuardSpacing.md) {
+                                ChildAvatar(child: child, size: 64)
+                                VStack(alignment: .leading, spacing: EGuardSpacing.xxs) {
+                                    Text(child.name)
+                                        .font(EGuardTypography.title3)
+                                        .foregroundStyle(EGuardColors.textPrimary)
+                                    Text("\(child.ageDescription) · \(child.deviceCount == 0 ? "No devices" : (child.deviceCount == 1 ? child.deviceName : "\(child.deviceCount) devices"))")
+                                        .font(EGuardTypography.caption)
+                                        .foregroundStyle(EGuardColors.textSecondary)
+                                    HStack(spacing: EGuardSpacing.xs) {
+                                        StatusPill(text: child.status.title, tint: statusTint(child.status))
+                                        Text("\(child.health.text) health")
+                                            .font(EGuardTypography.caption)
+                                            .foregroundStyle(EGuardColors.textSecondary)
+                                    }
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(EGuardColors.neutral)
+                            }
+                            if let today = child.todayMinutes, let limit = child.todayLimitMinutes, child.deviceCount > 0 {
+                                ProgressView(value: Double(min(today, limit)), total: Double(max(limit, 1)))
+                                    .tint(EGuardColors.primary)
+                                Text("\(ProtectionConfigFormatter.duration(today)) of \(ProtectionConfigFormatter.duration(limit)) screen time today")
                                     .font(EGuardTypography.caption)
                                     .foregroundStyle(EGuardColors.textSecondary)
-                                StatusPill(
-                                    text: state == .active ? "Protected" : (state == .needsAttention ? "Attention" : "Not set up"),
-                                    tint: EGuardTheme.color(for: state)
-                                )
                             }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(EGuardColors.neutral)
                         }
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("children.child")
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("children.child")
-
-                EGuardCard {
-                    SectionHeader(title: "Quick actions")
-                    EGuardNavRow(title: "Screen Time", subtitle: "Usage and daily allowances", symbolName: "clock.fill") {
-                        router.push(.screenTime)
-                    }
-                    Divider()
-                    EGuardNavRow(title: "App Management", subtitle: "Managed and blocked apps", symbolName: "square.grid.2x2.fill", tint: EGuardColors.tilePurple) {
-                        router.push(.appsManagement)
-                    }
-                    Divider()
-                    EGuardNavRow(title: "Location", subtitle: model.preferences.isLocationSharingEnabled ? "Sharing enabled" : "Sharing off", symbolName: "location.fill", tint: EGuardColors.success) {
-                        router.push(.location)
-                    }
-                }
-            } else {
-                EmptyStateView(
-                    symbolName: "person.crop.circle.badge.plus",
-                    title: "No child added yet",
-                    message: "Add the child who uses this device to start protecting them."
-                )
-                Button("Add Child") { router.push(.childDevice) }
-                    .buttonStyle(.eGuardPrimary)
-            }
-
-            EGuardCard {
-                Label("Apple's Screen Time controls apply to the device eGuard is installed on. Install eGuard on each child's device to protect more children.", systemImage: "info.circle.fill")
-                    .font(EGuardTypography.caption)
-                    .foregroundStyle(EGuardColors.textSecondary)
             }
         }
+        .refreshable { await loadChildren() }
+        .task { await loadChildren() }
+    }
+
+    private func loadChildren() async {
+        if state.value == nil { state = .loading }
+        state = await load { try await model.api.children() }
     }
 }
 

@@ -1,103 +1,95 @@
-import CoreLocation
 import MapKit
 import SwiftUI
 
-/// 14 Location. Shows where this device is while eGuard is open and location sharing is on.
+/// 14 Location, from `GET /children/{id}/location`. Sharing is a protection (`LOCATION`), so the
+/// toggle routes to the protection editor.
 struct LocationView: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.openURL) private var openURL
-    @State private var service = LocationService()
-    @State private var position: MapCameraPosition = .automatic
+    let childId: String
 
-    private var isSharing: Bool { model.preferences.isLocationSharingEnabled }
+    @Environment(AppModel.self) private var model
+    @Environment(AppRouter.self) private var router
+    @State private var state: LoadState<LocationResponse> = .loading
+    @State private var position: MapCameraPosition = .automatic
+    @State private var isShowingAllVisits = false
 
     var body: some View {
         EGuardScreen {
-            sharingCard
-
-            if isSharing {
-                mapCard
-                todayCard
-            } else {
-                EGuardCard {
-                    EmptyStateView(
-                        symbolName: "location.slash",
-                        title: "Location sharing is off",
-                        message: "Turn it on to see where \(model.childProfile?.deviceName ?? "this device") is while eGuard is open.",
-                        tint: EGuardColors.success
-                    )
-                }
-            }
-
-            EGuardCard {
-                Label("Location is read only while eGuard is open and stays on this device. Nothing is uploaded or shared.", systemImage: "lock.shield")
-                    .font(EGuardTypography.caption)
-                    .foregroundStyle(EGuardColors.textSecondary)
-            }
-        } actions: {
-            if service.isDenied {
-                Button("Open Settings to Allow Location") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-                }
-                .buttonStyle(.eGuardPrimary)
-            }
-        }
-        .navigationTitle("Location")
-        .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            service.onVisit = { visit in model.recordVisit(visit) }
-            if isSharing { service.start() }
-        }
-        .onDisappear { service.stop() }
-        .onChange(of: service.currentLocation) { _, location in
-            guard let location else { return }
-            withAnimation {
-                position = .region(MKCoordinateRegion(
-                    center: location.coordinate,
-                    latitudinalMeters: 1200,
-                    longitudinalMeters: 1200
-                ))
-            }
-        }
-    }
-
-    private var sharingCard: some View {
-        EGuardCard {
-            Toggle(isOn: Binding(
-                get: { isSharing },
-                set: { enabled in
-                    model.setLocationSharing(enabled)
-                    if enabled { service.start() } else { service.stop() }
-                }
-            )) {
-                HStack(spacing: EGuardSpacing.sm) {
-                    IconTile(symbolName: isSharing ? "checkmark" : "location.slash", tint: isSharing ? EGuardColors.success : EGuardColors.neutral, filled: isSharing)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Location sharing")
-                            .font(EGuardTypography.label)
-                        Text(isSharing ? "Enabled" : "Off")
-                            .font(EGuardTypography.caption)
-                            .foregroundStyle(isSharing ? EGuardColors.success : EGuardColors.textSecondary)
+            switch state {
+            case .loading:
+                LoadingCard()
+            case .failed(let message):
+                ErrorCard(message: message) { Task { await loadLocation() } }
+            case .loaded(let response):
+                sharingCard(response)
+                if response.sharing {
+                    mapCard(response)
+                    visitsCard(response)
+                } else {
+                    EGuardCard {
+                        EmptyStateView(
+                            symbolName: "location.slash",
+                            title: "Location sharing is off",
+                            message: "Turn on the Location protection to see where the device is. On iPhone this is a guided step in Settings.",
+                            tint: EGuardColors.success
+                        )
                     }
                 }
             }
-            .tint(EGuardColors.success)
+        } actions: {
+            Button(state.value?.sharing == true ? "Change Location Sharing" : "Turn On Location Sharing") {
+                router.push(.protectionEditor(childId: childId, key: "LOCATION"))
+            }
+            .buttonStyle(.eGuardPrimary)
             .accessibilityIdentifier("location.toggle")
+        }
+        .navigationTitle("Location")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await loadLocation() }
+        .refreshable { await loadLocation() }
+        .sheet(isPresented: $isShowingAllVisits) {
+            VisitsHistoryView(childId: childId)
+        }
+    }
 
-            if let message = service.errorMessage {
-                Label(message, systemImage: "exclamationmark.circle.fill")
-                    .font(EGuardTypography.caption)
-                    .foregroundStyle(EGuardColors.warning)
+    private func loadLocation() async {
+        if state.value == nil { state = .loading }
+        state = await load { try await model.api.location(childId: childId) }
+        if let current = state.value?.current {
+            position = .region(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: current.lat, longitude: current.lng), latitudinalMeters: 1200, longitudinalMeters: 1200))
+        }
+    }
+
+    private func sharingCard(_ response: LocationResponse) -> some View {
+        EGuardCard {
+            HStack(spacing: EGuardSpacing.sm) {
+                IconTile(symbolName: response.sharing ? "checkmark" : "location.slash", tint: response.sharing ? EGuardColors.success : EGuardColors.neutral, filled: response.sharing)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Location sharing").font(EGuardTypography.label)
+                    Text(response.sharing ? "Enabled" : "Off")
+                        .font(EGuardTypography.caption)
+                        .foregroundStyle(response.sharing ? EGuardColors.success : EGuardColors.textSecondary)
+                }
+                Spacer()
+                ForEach(response.devices) { device in
+                    Image(systemName: device.hasLocation ? "iphone.radiowaves.left.and.right" : "iphone.slash")
+                        .foregroundStyle(device.hasLocation ? EGuardColors.success : EGuardColors.neutral)
+                        .accessibilityLabel("\(device.name) \(device.hasLocation ? "sharing" : "not sharing")")
+                }
             }
         }
     }
 
-    private var mapCard: some View {
+    private func mapCard(_ response: LocationResponse) -> some View {
         VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
             Map(position: $position) {
-                UserAnnotation()
-                if let location = service.currentLocation {
-                    MapCircle(center: location.coordinate, radius: 250)
+                if let current = response.current {
+                    let coordinate = CLLocationCoordinate2D(latitude: current.lat, longitude: current.lng)
+                    Annotation(current.deviceName, coordinate: coordinate) {
+                        Image(systemName: "figure.child.circle.fill")
+                            .font(.title)
+                            .foregroundStyle(.white, EGuardColors.primary)
+                    }
+                    MapCircle(center: coordinate, radius: current.accuracyM ?? 250)
                         .foregroundStyle(EGuardColors.primary.opacity(0.15))
                         .stroke(EGuardColors.primary.opacity(0.4), lineWidth: 1)
                 }
@@ -106,8 +98,9 @@ struct LocationView: View {
             .frame(height: 240)
             .clipShape(EGuardShapes.card)
             .overlay(alignment: .center) {
-                if service.currentLocation == nil {
-                    ProgressView("Finding location…")
+                if response.current == nil {
+                    Text("Waiting for the first location…")
+                        .font(EGuardTypography.caption)
                         .padding(EGuardSpacing.sm)
                         .background(.regularMaterial, in: EGuardShapes.button)
                 }
@@ -115,37 +108,37 @@ struct LocationView: View {
             .accessibilityLabel("Map of the device's current location")
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(service.placeName.map { "Near \($0)" } ?? model.preferences.lastKnownPlace.map { "Last seen near \($0)" } ?? "Locating…")
+                Text(response.current?.placeLabel.map { "Near \($0)" } ?? "Locating…")
                     .font(EGuardTypography.label)
-                Text(model.preferences.lastLocationUpdate.map { "Last updated \($0.relativeDescription())" } ?? "Waiting for the first update")
+                Text(response.current?.updatedLabel ?? "No location yet")
                     .font(EGuardTypography.caption)
                     .foregroundStyle(EGuardColors.textSecondary)
             }
         }
     }
 
-    private var todayCard: some View {
-        let visits = model.preferences.visits(on: .now)
-        return VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
-            SectionHeader(title: "Today")
+    private func visitsCard(_ response: LocationResponse) -> some View {
+        VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
+            SectionHeader(title: "Today", actionTitle: response.history.enabled ? "View All" : nil) { isShowingAllVisits = true }
             EGuardCard {
-                if visits.isEmpty {
+                if !response.history.enabled {
+                    Label("Location history is off", systemImage: "clock.arrow.circlepath")
+                        .font(EGuardTypography.headline)
+                    Text("The family admin can turn it on under Settings › Privacy to keep a list of places the device visited.")
+                        .font(EGuardTypography.caption)
+                        .foregroundStyle(EGuardColors.textSecondary)
+                    if model.user?.isAdmin == true {
+                        Button("Open Privacy Settings") { router.push(.privacy) }
+                            .buttonStyle(.eGuardSecondary)
+                    }
+                } else if response.history.visits.isEmpty {
                     Text("No places recorded yet today.")
                         .font(EGuardTypography.callout)
                         .foregroundStyle(EGuardColors.textSecondary)
                 } else {
-                    ForEach(visits) { visit in
-                        HStack(spacing: EGuardSpacing.sm) {
-                            IconTile(symbolName: "mappin.circle.fill", tint: EGuardColors.success)
-                            Text(visit.name)
-                                .font(EGuardTypography.label)
-                            Spacer()
-                            Text(visit.date.formatted(date: .omitted, time: .shortened))
-                                .font(EGuardTypography.caption)
-                                .foregroundStyle(EGuardColors.textSecondary)
-                        }
-                        .padding(.vertical, EGuardSpacing.xxs)
-                        if visit.id != visits.last?.id { Divider() }
+                    ForEach(response.history.visits) { visit in
+                        VisitRow(visit: visit)
+                        if visit.id != response.history.visits.last?.id { Divider() }
                     }
                 }
             }
@@ -153,9 +146,110 @@ struct LocationView: View {
     }
 }
 
+struct VisitRow: View {
+    let visit: Visit
+
+    var body: some View {
+        HStack(spacing: EGuardSpacing.sm) {
+            IconTile(symbolName: "mappin.circle.fill", tint: EGuardColors.success)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(visit.placeLabel).font(EGuardTypography.label)
+                Text(visit.deviceName).font(EGuardTypography.caption).foregroundStyle(EGuardColors.textSecondary)
+            }
+            Spacer()
+            Text(visit.timeLabel)
+                .font(EGuardTypography.caption)
+                .foregroundStyle(EGuardColors.textSecondary)
+        }
+        .padding(.vertical, EGuardSpacing.xxs)
+    }
+}
+
+/// "View All": every visit kept, grouped by day, from `GET /children/{id}/location/visits`.
+struct VisitsHistoryView: View {
+    let childId: String
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var visits: [Visit] = []
+    @State private var nextBefore: Date?
+    @State private var enabled = true
+    @State private var retentionDays: Int?
+    @State private var error: String?
+    @State private var isLoading = true
+
+    private var groups: [(DayGroup, [Visit])] {
+        var order: [DayGroup] = []
+        var buckets: [DayGroup: [Visit]] = [:]
+        for visit in visits {
+            if buckets[visit.day] == nil { order.append(visit.day) }
+            buckets[visit.day, default: []].append(visit)
+        }
+        return order.map { ($0, buckets[$0] ?? []) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            EGuardScreen {
+                if isLoading {
+                    LoadingCard()
+                } else if let error {
+                    ErrorCard(message: error) { Task { await loadPage(reset: true) } }
+                } else if !enabled {
+                    EmptyStateView(symbolName: "clock.arrow.circlepath", title: "Location history is off", message: "Turn it on under Settings › Privacy.")
+                } else if visits.isEmpty {
+                    EmptyStateView(symbolName: "mappin.slash", title: "No visits yet", message: "Places appear here as the device moves around.")
+                } else {
+                    ForEach(groups, id: \.0.key) { day, dayVisits in
+                        VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
+                            SectionHeader(title: day.label)
+                            EGuardCard {
+                                ForEach(dayVisits) { visit in
+                                    VisitRow(visit: visit)
+                                    if visit.id != dayVisits.last?.id { Divider() }
+                                }
+                            }
+                        }
+                    }
+                    if nextBefore != nil {
+                        Button("Load more") { Task { await loadPage(reset: false) } }
+                            .buttonStyle(.eGuardSecondary)
+                    }
+                    if let retentionDays {
+                        Text("Visits are kept for \(retentionDays) days.")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
+                }
+            } actions: {
+                Button("Done") { dismiss() }
+                    .buttonStyle(.eGuardSecondary)
+            }
+            .navigationTitle("All visits")
+            .navigationBarTitleDisplayMode(.inline)
+            .task { await loadPage(reset: true) }
+        }
+    }
+
+    private func loadPage(reset: Bool) async {
+        isLoading = reset
+        do {
+            let page = try await model.api.visits(childId: childId, before: reset ? nil : nextBefore)
+            enabled = page.enabled
+            retentionDays = page.retentionDays
+            visits = reset ? page.visits : visits + page.visits
+            nextBefore = page.nextBefore
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+        isLoading = false
+    }
+}
+
 #Preview {
     NavigationStack {
-        LocationView()
+        LocationView(childId: "child_1")
     }
     .environment(AppModel.preview())
     .environment(AppRouter())

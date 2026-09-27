@@ -1,40 +1,104 @@
 import SwiftUI
 
-/// What eGuard does and does not do with family data.
+/// Family privacy settings from `/family/privacy` (admin only), plus what eGuard stores.
 struct PrivacyView: View {
+    @Environment(AppModel.self) private var model
+    @State private var state: LoadState<PrivacySettings> = .loading
+    @State private var isConfirmingHistoryOff = false
+    @State private var errorMessage: String?
+
+    private var canManage: Bool { model.user?.isAdmin ?? false }
+
     var body: some View {
         EGuardScreen {
             EGuardIllustration(symbolName: "lock.shield.fill", size: 96)
                 .frame(maxWidth: .infinity)
             ScreenHeader(
-                title: "Your data stays with you",
-                subtitle: "eGuard has no servers. Everything it stores lives on this device."
+                title: "Privacy",
+                subtitle: canManage ? "These settings apply to the whole family." : "Only the family admin can change these settings."
             )
 
-            EGuardCard {
-                SectionHeader(title: "What eGuard does")
-                point("Configures Apple's Screen Time protections and verifies they are active.", symbol: "checkmark.shield.fill", tint: EGuardColors.success)
-                Divider()
-                point("Stores your child's name, age, and photo in the device Keychain.", symbol: "key.fill", tint: EGuardColors.primary)
-                Divider()
-                point("Keeps app choices as Apple's privacy-preserving tokens, never app names.", symbol: "lock.fill", tint: EGuardColors.tilePurple)
-                Divider()
-                point("Reads location only while the app is open and only if you turn sharing on.", symbol: "location.fill", tint: EGuardColors.success)
+            switch state {
+            case .loading:
+                LoadingCard()
+            case .failed(let message):
+                ErrorCard(message: message) { Task { await loadPrivacy() } }
+            case .loaded(let settings):
+                EGuardCard {
+                    Toggle(isOn: Binding(
+                        get: { settings.keepLocationHistory },
+                        set: { value in
+                            if value { Task { await update(PrivacyPatch(keepLocationHistory: true)) } } else { isConfirmingHistoryOff = true }
+                        }
+                    )) {
+                        HStack(spacing: EGuardSpacing.sm) {
+                            IconTile(symbolName: "clock.arrow.circlepath", tint: EGuardColors.success)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Keep location history").font(EGuardTypography.label)
+                                Text(settings.retentionDays.map { "Places visited are kept for \($0) days" } ?? "Keeps a list of places visited")
+                                    .font(EGuardTypography.caption)
+                                    .foregroundStyle(EGuardColors.textSecondary)
+                            }
+                        }
+                    }
+                    .tint(EGuardColors.primary)
+                    .disabled(!canManage)
+                    Divider()
+                    Toggle(isOn: Binding(
+                        get: { settings.shareAnalytics },
+                        set: { value in Task { await update(PrivacyPatch(shareAnalytics: value)) } }
+                    )) {
+                        HStack(spacing: EGuardSpacing.sm) {
+                            IconTile(symbolName: "chart.bar.fill", tint: EGuardColors.tilePurple)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Share anonymous analytics").font(EGuardTypography.label)
+                                Text("Helps improve eGuard. Never includes names or locations.")
+                                    .font(EGuardTypography.caption)
+                                    .foregroundStyle(EGuardColors.textSecondary)
+                            }
+                        }
+                    }
+                    .tint(EGuardColors.primary)
+                    .disabled(!canManage)
+                }
             }
+            InlineError(message: errorMessage)
 
             EGuardCard {
-                SectionHeader(title: "What eGuard never does")
-                point("Read messages, record audio or video, or collect passwords.", symbol: "eye.slash.fill", tint: EGuardColors.danger)
+                SectionHeader(title: "What eGuard stores")
+                point("The protections you chose and what each device reports about them.", symbol: "checkmark.shield.fill", tint: EGuardColors.success)
                 Divider()
-                point("Upload family information or usage data anywhere.", symbol: "icloud.slash.fill", tint: EGuardColors.danger)
+                point("Your children's names, ages, and optional photos.", symbol: "person.fill", tint: EGuardColors.primary)
                 Divider()
-                point("Monitor your child secretly. Apple shows the child that Screen Time is managed.", symbol: "person.fill.viewfinder", tint: EGuardColors.danger)
+                point("Location only while a device shares it, and history only when turned on above.", symbol: "location.fill", tint: EGuardColors.success)
+                Divider()
+                point("Never messages, recordings, or passwords from your child's device.", symbol: "eye.slash.fill", tint: EGuardColors.danger)
             }
         } actions: {
             EmptyView()
         }
         .navigationTitle("Privacy")
         .navigationBarTitleDisplayMode(.inline)
+        .task { await loadPrivacy() }
+        .confirmationDialog("Turn off location history?", isPresented: $isConfirmingHistoryOff, titleVisibility: .visible) {
+            Button("Turn Off and Delete History", role: .destructive) { Task { await update(PrivacyPatch(keepLocationHistory: false)) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All stored visits are deleted immediately. This can't be undone.")
+        }
+    }
+
+    private func loadPrivacy() async {
+        state = await load { try await model.api.privacy() }
+    }
+
+    private func update(_ patch: PrivacyPatch) async {
+        do {
+            state = .loaded(try await model.api.updatePrivacy(patch))
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func point(_ text: String, symbol: String, tint: Color) -> some View {
@@ -52,4 +116,6 @@ struct PrivacyView: View {
     NavigationStack {
         PrivacyView()
     }
+    .environment(AppModel.preview())
+    .environment(AppRouter())
 }

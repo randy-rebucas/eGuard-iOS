@@ -25,26 +25,31 @@ struct WelcomeView: View {
 
             FamilyIllustration(height: 260)
 
-            if model.isSignedIn, let account = model.account {
+            if let user = model.user {
                 EGuardCard {
-                    Label("Signed in as \(account.fullName). Let's finish setting up your child's device.", systemImage: "person.crop.circle.badge.checkmark")
+                    Label("Signed in as \(user.name). Add your first child to get started.", systemImage: "person.crop.circle.badge.checkmark")
                         .font(EGuardTypography.callout)
                         .foregroundStyle(EGuardColors.textSecondary)
                 }
+                VerifyEmailBanner()
+            }
+
+            if let error = model.refreshError, model.isSignedIn {
+                ErrorCard(message: error) { Task { await model.refreshDashboard() } }
             }
         } actions: {
-            Button("Get Started") {
-                router.push(model.isSignedIn ? .childDevice : .createAccount)
+            Button(model.isSignedIn ? "Add Your First Child" : "Get Started") {
+                router.push(model.isSignedIn ? .addChild : .createAccount)
             }
             .buttonStyle(.eGuardPrimary)
             .accessibilityIdentifier("welcome.getStarted")
 
             if model.isSignedIn {
-                Button("Already configured? Check my setup") {
-                    router.push(.healthReview)
+                Button("Sign out") {
+                    Task { await model.signOut() }
                 }
                 .buttonStyle(.eGuardText)
-                .accessibilityIdentifier("welcome.checkSetup")
+                .accessibilityIdentifier("welcome.signOut")
             } else {
                 Button("I already have an account") {
                     router.push(.signIn)

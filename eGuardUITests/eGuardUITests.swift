@@ -1,6 +1,6 @@
 import XCTest
 
-/// Drives every onboarding screen with mock platform services (`-uiTesting`).
+/// Drives the parent app against the in-memory mock server (`-uiTesting`).
 final class OnboardingUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -13,7 +13,7 @@ final class OnboardingUITests: XCTestCase {
         return app
     }
 
-    private func waitFor(_ element: XCUIElement, timeout: TimeInterval = 8, file: StaticString = #filePath, line: UInt = #line) {
+    private func waitFor(_ element: XCUIElement, timeout: TimeInterval = 10, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(element.waitForExistence(timeout: timeout), "Missing \(element)", file: file, line: line)
     }
 
@@ -22,8 +22,7 @@ final class OnboardingUITests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
-    /// Taps a field until the keyboard appears, then types. A tap can land while the previous
-    /// screen's keyboard is still dismissing, which leaves nothing focused.
+    /// Taps a field until the keyboard appears, then types and presses Return so the pinned bar is tappable.
     private func type(_ text: String, into field: XCUIElement, in app: XCUIApplication) {
         dismissSavePasswordPromptIfNeeded(in: app)
         for _ in 0..<3 {
@@ -31,7 +30,6 @@ final class OnboardingUITests: XCTestCase {
             if app.keyboards.firstMatch.waitForExistence(timeout: 2) { break }
             dismissSavePasswordPromptIfNeeded(in: app)
         }
-        // Return dismisses the keyboard so the pinned action bar is tappable afterwards.
         field.typeText(text + "\n")
     }
 
@@ -43,11 +41,9 @@ final class OnboardingUITests: XCTestCase {
         }
     }
 
-    /// Scrolls until the element is hittable, since rows near the bottom sit under the pinned action bar.
+    /// Scrolls until the element clears the pinned action bar, then taps it.
     private func tapScrolling(_ element: XCUIElement, in app: XCUIApplication) {
         waitFor(element)
-        // The pinned action bar occupies roughly the bottom 170 points and is translucent,
-        // so hit-testing still reports rows under it as hittable.
         let coveredBelow = app.frame.maxY - 170
         var attempts = 0
         while (!element.isHittable || element.frame.maxY > coveredBelow) && attempts < 4 {
@@ -57,14 +53,14 @@ final class OnboardingUITests: XCTestCase {
         element.tap()
     }
 
-    /// Fills the Create Account form, which precedes the child step for a new parent.
     private func createAccount(in app: XCUIApplication) {
         let name = app.textFields["account.name"]
         waitFor(name)
         type("Randy Cruz", into: name, in: app)
-        type("randy@example.com", into: app.textFields["account.email"], in: app)
-        type("safe-password-1", into: app.secureTextFields["account.password"], in: app)
-        app.buttons["account.create"].tap()
+        type("newparent@example.com", into: app.textFields["account.email"], in: app)
+        type("safe-password-10", into: app.secureTextFields["account.password"], in: app)
+        tapScrolling(element("account.guardian", in: app), in: app)
+        tapScrolling(app.buttons["account.create"], in: app)
         dismissSavePasswordPromptIfNeeded(in: app, timeout: 4)
         waitFor(app.textFields["child.nameField"])
     }
@@ -78,50 +74,39 @@ final class OnboardingUITests: XCTestCase {
         waitFor(app.buttons["welcome.signIn"])
         app.buttons["welcome.getStarted"].tap()
 
-        // 02 Create Account
+        // 03 Create Account (POST /auth/register)
         createAccount(in: app)
 
-        // 03 Child & Device
+        // 04 Add Child (POST /children)
         waitFor(app.otherElements["onboarding.progress.2"])
-        let nameField = app.textFields["child.nameField"]
-        waitFor(nameField)
-        type("Mia", into: nameField, in: app)
-        app.buttons["child.relationship.childInFamilySharing"].tap()
+        type("Mia", into: app.textFields["child.nameField"], in: app)
         XCTAssertTrue(app.buttons["child.continue"].isEnabled)
         app.buttons["child.continue"].tap()
 
-        // 04 Protection Profile
+        // 05 Protection Profile (GET /profiles)
         waitFor(app.otherElements["onboarding.progress.3"])
+        waitFor(app.buttons["profile.option.protected"])
         app.buttons["profile.option.protected"].tap()
         app.buttons["profile.continue"].tap()
 
-        // 05 Recommended Setup
+        // 06 Recommended Setup (GET /recommendations)
         waitFor(app.otherElements["onboarding.progress.4"])
-        waitFor(app.buttons["recommended.edit.downtime"])
+        waitFor(app.buttons["recommended.edit.bedtime"])
         app.buttons["recommended.reviewSetup"].tap()
 
-        // 06 Configure Settings, including Apple authorization
+        // 07 Setup Progress: no device yet, so settings are saved (POST /setup → batchId null)
         waitFor(app.otherElements["onboarding.progress.5"])
-        app.buttons["configure.authorize"].tap()
-        waitFor(app.buttons["authorization.continue"])
-        app.buttons["authorization.continue"].tap()
-        waitFor(app.buttons["authorization.done"])
-        app.buttons["authorization.done"].tap()
-
-        tapScrolling(app.buttons["configure.feature.webContent"], in: app)
-        waitFor(app.buttons["feature.configure"])
-        app.buttons["feature.configure"].tap()
-        waitFor(app.otherElements["feature.result"])
-        app.buttons["feature.continue"].tap()
-        waitFor(app.buttons["configure.continue"])
+        waitFor(app.buttons["setup.skip"])
+        app.buttons["setup.skip"].tap()
+        waitFor(element("setup.saved", in: app))
         app.buttons["configure.continue"].tap()
 
-        // 07 Configuration Health Check
+        // 08 Configuration Health (GET /health?childId=)
         waitFor(app.otherElements["onboarding.progress.6"])
         waitFor(element("health.score", in: app))
         app.buttons["health.continue"].tap()
 
-        // 08 Complete
+        // 09 Complete
         waitFor(app.otherElements["onboarding.progress.7"])
         app.buttons["complete.goToDashboard"].tap()
 
@@ -131,37 +116,48 @@ final class OnboardingUITests: XCTestCase {
     }
 
     @MainActor
-    func testDeniedAuthorizationOffersRetryAndContinueWithout() throws {
-        let app = launch(arguments: ["-denyAuthorization"])
-        app.buttons["welcome.getStarted"].tap()
-        createAccount(in: app)
-        let nameField = app.textFields["child.nameField"]
-        waitFor(nameField)
-        type("Mia", into: nameField, in: app)
+    func testPairingAndGuidedSetupVerifyThroughABatch() throws {
+        // A brand-new sign-up is unverified and can't pair, so sign in as the verified parent instead.
+        let app = launch()
+        app.buttons["welcome.signIn"].tap()
+        type("randy@example.com", into: app.textFields["signIn.email"], in: app)
+        type("ChangeMe123!", into: app.secureTextFields["signIn.password"], in: app)
+        app.buttons["signIn.submit"].tap()
+        dismissSavePasswordPromptIfNeeded(in: app, timeout: 4)
+        waitFor(app.textFields["child.nameField"])
+        type("Mia", into: app.textFields["child.nameField"], in: app)
         app.buttons["child.continue"].tap()
+        waitFor(app.buttons["profile.continue"])
         app.buttons["profile.continue"].tap()
         waitFor(app.buttons["recommended.reviewSetup"])
         app.buttons["recommended.reviewSetup"].tap()
-        waitFor(app.buttons["configure.authorize"])
-        app.buttons["configure.authorize"].tap()
-        waitFor(app.buttons["authorization.continue"])
-        app.buttons["authorization.continue"].tap()
 
-        waitFor(app.otherElements["authorization.denied"])
-        XCTAssertTrue(app.buttons["authorization.tryAgain"].exists)
-        app.buttons["authorization.continueWithout"].tap()
-        waitFor(app.buttons["configure.authorize"])
+        // Pair a device with the code sheet (POST /pairing-code), simulated by the mock server.
+        waitFor(app.buttons["setup.pair"])
+        app.buttons["setup.pair"].tap()
+        waitFor(element("pairing.code", in: app))
+        app.buttons["pairing.simulate"].tap()
+        waitFor(element("pairing.paired", in: app))
+        app.buttons["pairing.close"].tap()
+
+        // The batch runs; WEB is guided on iPhone and needs confirmation.
+        let web = app.buttons["configure.feature.web"]
+        tapScrolling(web, in: app)
+        waitFor(app.buttons["guide.confirm"])
+        app.buttons["guide.confirm"].tap()
+        waitFor(element("setup.done", in: app), timeout: 20)
+        app.buttons["configure.continue"].tap()
+        waitFor(element("health.score", in: app))
     }
 
     @MainActor
-    func testGuidedSettingCanBeDeferred() throws {
-        let app = launch(arguments: ["-setupComplete"])
-        waitFor(app.buttons["dashboard.manageProtection"])
-        app.buttons["dashboard.manageProtection"].tap()
-        tapScrolling(app.buttons["configure.feature.screenTimePasscode"], in: app)
-        waitFor(app.buttons["feature.later"])
-        app.buttons["feature.later"].tap()
-        waitFor(app.buttons["configure.checkConfiguration"])
+    func testSignInWithWrongPasswordShowsServerMessage() throws {
+        let app = launch()
+        app.buttons["welcome.signIn"].tap()
+        type("randy@example.com", into: app.textFields["signIn.email"], in: app)
+        type("wrong-password-1", into: app.secureTextFields["signIn.password"], in: app)
+        app.buttons["signIn.submit"].tap()
+        waitFor(element("inlineError", in: app))
     }
 
     @MainActor
@@ -180,8 +176,8 @@ final class OnboardingUITests: XCTestCase {
         app.tabBars.buttons["Alerts"].tap()
         waitFor(app.staticTexts["Alerts"])
         app.tabBars.buttons["Settings"].tap()
-        waitFor(app.buttons["settings.reset"])
+        waitFor(app.buttons["settings.signOut"])
         app.tabBars.buttons["Children"].tap()
-        waitFor(app.buttons["children.child"])
+        waitFor(app.buttons["children.child"].firstMatch)
     }
 }

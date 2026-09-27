@@ -1,12 +1,12 @@
 import SwiftUI
 
-/// 16 Settings: the menu of app sections plus reset.
+/// 16 Settings: the menu of app sections, from `/me` plus links to each server-backed screen.
 struct SettingsView: View {
     let isRoot: Bool
 
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
-    @State private var isConfirmingReset = false
+    @State private var isConfirmingSignOut = false
 
     private var version: String {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
@@ -31,35 +31,33 @@ struct SettingsView: View {
                 .navigationBarTitleDisplayMode(.inline)
             }
         }
-        .confirmationDialog(
-            "Remove all protections?",
-            isPresented: $isConfirmingReset,
-            titleVisibility: .visible
-        ) {
-            Button("Remove and Reset", role: .destructive) {
-                model.resetEverything()
-                router.popToRoot()
+        .confirmationDialog("Sign out of eGuard?", isPresented: $isConfirmingSignOut, titleVisibility: .visible) {
+            Button("Sign Out", role: .destructive) {
+                Task {
+                    await model.signOut()
+                    router.popToRoot()
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Downtime, limits, and restrictions applied by eGuard will be removed immediately, and the account on this device is deleted.")
+            Text("Protections stay active on your children's devices. Sign back in to manage them.")
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        if let account = model.account {
+        if let user = model.user {
             Button {
                 router.push(.account)
             } label: {
                 EGuardCard {
                     HStack(spacing: EGuardSpacing.sm) {
-                        AvatarView(name: account.fullName, size: 48)
+                        AvatarView(name: user.name, size: 48)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(account.fullName)
+                            Text(user.name)
                                 .font(EGuardTypography.headline)
                                 .foregroundStyle(EGuardColors.textPrimary)
-                            Text(account.email)
+                            Text("\(user.email) · \(user.role.title)")
                                 .font(EGuardTypography.caption)
                                 .foregroundStyle(EGuardColors.textSecondary)
                         }
@@ -72,37 +70,30 @@ struct SettingsView: View {
             .buttonStyle(.plain)
         }
 
-        if !model.authorizationStatus.isAuthorized {
-            EGuardCard {
-                Label("eGuard needs Family Controls authorization", systemImage: "hand.raised.fill")
-                    .font(EGuardTypography.headline)
-                Text("Automatic protections can only be applied and verified after you grant it.")
-                    .font(EGuardTypography.caption)
-                    .foregroundStyle(EGuardColors.textSecondary)
-                Button("Grant Authorization") { router.push(.authorization) }
-                    .buttonStyle(.eGuardSecondary)
-                    .accessibilityIdentifier("settings.authorize")
-            }
-        }
+        VerifyEmailBanner()
 
         EGuardCard {
-            EGuardNavRow(title: "Family", subtitle: "Manage children and devices", symbolName: "person.2.fill") {
-                router.show(.children)
+            EGuardNavRow(title: "Family", subtitle: model.user.map { "\($0.family.name) · manage parents and children" } ?? "Manage children and devices", symbolName: "person.2.fill") {
+                router.push(.family)
             }
             Divider()
             EGuardNavRow(title: "Protection & Controls", subtitle: "Screen time, apps, content", symbolName: "shield.lefthalf.filled", tint: EGuardColors.tileTeal) {
-                router.push(.manageProtection)
+                if let first = model.children.first, model.children.count == 1 {
+                    router.push(.protections(childId: first.id))
+                } else {
+                    router.show(.children)
+                }
             }
             Divider()
             EGuardNavRow(title: "Notifications", subtitle: "Alert preferences", symbolName: "bell.fill", tint: EGuardColors.tileOrange) {
                 router.push(.notifications)
             }
             Divider()
-            EGuardNavRow(title: "Privacy", subtitle: "Your data and security", symbolName: "lock.fill", tint: EGuardColors.tilePurple) {
+            EGuardNavRow(title: "Privacy", subtitle: "Location history and analytics", symbolName: "lock.fill", tint: EGuardColors.tilePurple) {
                 router.push(.privacy)
             }
             Divider()
-            EGuardNavRow(title: "Account", subtitle: "Profile and login", symbolName: "person.crop.circle.fill", tint: EGuardColors.primary) {
+            EGuardNavRow(title: "Account", subtitle: "Profile, password, sessions", symbolName: "person.crop.circle.fill", tint: EGuardColors.primary) {
                 router.push(.account)
             }
             Divider()
@@ -119,14 +110,12 @@ struct SettingsView: View {
             }
         }
 
-        Button("Remove All Protections and Reset", role: .destructive) {
-            isConfirmingReset = true
-        }
-        .font(EGuardTypography.label)
-        .foregroundStyle(EGuardColors.danger)
-        .frame(maxWidth: .infinity, minHeight: 50)
-        .background(EGuardColors.surface, in: EGuardShapes.button)
-        .accessibilityIdentifier("settings.reset")
+        Button("Sign Out") { isConfirmingSignOut = true }
+            .font(EGuardTypography.label)
+            .foregroundStyle(EGuardColors.danger)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .background(EGuardColors.surface, in: EGuardShapes.button)
+            .accessibilityIdentifier("settings.signOut")
     }
 }
 

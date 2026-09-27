@@ -1,105 +1,125 @@
-import DeviceActivity
 import SwiftUI
 
-/// 11 Child Profile: photo header, status, and Overview / Activity / Apps / Protection tabs.
+/// 11 Child Profile: `GET /children/{id}` with Overview / Activity / Apps / Protection / History tabs.
 struct ChildProfileView: View {
     private enum Section: String, CaseIterable {
         case overview = "Overview"
         case activity = "Activity"
         case apps = "Apps"
         case protection = "Protection"
+        case history = "History"
     }
+
+    let childId: String
 
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
+    @State private var state: LoadState<ChildDetail> = .loading
+    @State private var history: LoadState<HistoryPage> = .loading
     @State private var section: Section = .overview
-
-    private var report: ConfigurationHealthReport? { model.lastHealthReport }
-    private var state: ProtectionState { report?.protectionState ?? .notConfigured }
+    @State private var isConfirmingDelete = false
+    @State private var deletePassword = ""
+    @State private var deleteError: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: EGuardSpacing.lg) {
-                if let child = model.childProfile {
-                    header(child)
+                switch state {
+                case .loading:
+                    LoadingCard().padding(.horizontal, EGuardSpacing.md)
+                case .failed(let message):
+                    ErrorCard(message: message) { Task { await loadChild() } }.padding(.horizontal, EGuardSpacing.md)
+                case .loaded(let detail):
+                    header(detail)
                     PillSegmentedControl(options: Section.allCases, selection: $section) { $0.rawValue }
                         .padding(.horizontal, EGuardSpacing.md)
-
                     Group {
                         switch section {
-                        case .overview: overview(child)
-                        case .activity: activity
-                        case .apps: apps
-                        case .protection: protection
+                        case .overview: overview(detail)
+                        case .activity: activity(detail)
+                        case .apps: apps(detail)
+                        case .protection: protection(detail)
+                        case .history: historySection
                         }
                     }
                     .padding(.horizontal, EGuardSpacing.md)
-                } else {
-                    EmptyStateView(
-                        symbolName: "person.crop.circle.badge.plus",
-                        title: "No child added yet",
-                        message: "Add the child who uses this device to see their profile."
-                    )
-                    Button("Add Child") { router.push(.childDevice) }
-                        .buttonStyle(.eGuardPrimary)
-                        .padding(.horizontal, EGuardSpacing.md)
                 }
             }
             .padding(.bottom, EGuardSpacing.xl)
         }
         .background(EGuardColors.background)
-        .navigationTitle(model.childProfile?.trimmedName ?? "Child")
+        .navigationTitle(state.value?.child.name ?? "Child")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("Edit child & device", systemImage: "pencil") { router.push(.childDevice) }
-                    Button("Change protection profile", systemImage: "shield.lefthalf.filled") { router.push(.protectionProfile) }
-                    Button("Manage protection", systemImage: "slider.horizontal.3") { router.push(.manageProtection) }
+                    Button("Edit child", systemImage: "pencil") { router.push(.editChild(childId: childId)) }
+                    Button("Change protection profile", systemImage: "shield.lefthalf.filled") { router.push(.protectionProfile(childId: childId)) }
+                    Button("Manage protection", systemImage: "slider.horizontal.3") { router.push(.protections(childId: childId)) }
+                    if model.user?.isAdmin == true {
+                        Button("Delete child", systemImage: "trash", role: .destructive) { isConfirmingDelete = true }
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                 }
                 .accessibilityLabel("More")
             }
         }
+        .task { await loadChild() }
+        .task(id: section) {
+            if section == .history, history.value == nil {
+                history = await load { try await model.api.history(childId: childId, before: nil) }
+            }
+        }
+        .alert("Delete \(state.value?.child.name ?? "child")?", isPresented: $isConfirmingDelete) {
+            SecureField("Your password", text: $deletePassword)
+            Button("Delete", role: .destructive) { Task { await deleteChild() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently deletes the child, their devices, and all their data. Enter your password to confirm.")
+        }
+        .alert("Couldn't delete", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deleteError ?? "")
+        }
+    }
+
+    private func loadChild() async {
+        if state.value == nil { state = .loading }
+        state = await load { try await model.api.child(id: childId) }
+    }
+
+    private func deleteChild() async {
+        do {
+            try await model.api.deleteChild(id: childId, password: deletePassword)
+            await model.refreshDashboard()
+            router.popToRoot()
+        } catch {
+            deleteError = error.localizedDescription
+        }
+        deletePassword = ""
     }
 
     // MARK: Header
 
-    private func header(_ child: ChildProfile) -> some View {
+    private func header(_ detail: ChildDetail) -> some View {
         ZStack(alignment: .bottomLeading) {
-            FamilyIllustration(height: 220)
-                .overlay(
-                    LinearGradient(colors: [.clear, .black.opacity(0.35)], startPoint: .center, endPoint: .bottom)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: EGuardShapes.cardRadius, style: .continuous))
-            if let data = child.photoData, let image = UIImage(data: data) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(height: 220)
-                    .frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: EGuardShapes.cardRadius, style: .continuous))
-                    .overlay(
-                        LinearGradient(colors: [.clear, .black.opacity(0.45)], startPoint: .center, endPoint: .bottom)
-                            .clipShape(RoundedRectangle(cornerRadius: EGuardShapes.cardRadius, style: .continuous))
-                    )
-            }
-            HStack(alignment: .bottom) {
+            FamilyIllustration(height: 200)
+            HStack(alignment: .bottom, spacing: EGuardSpacing.sm) {
+                ChildAvatar(child: detail.child, size: 72)
+                    .overlay(Circle().strokeBorder(.white, lineWidth: 3))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(child.trimmedName)
+                    Text(detail.child.name)
                         .font(EGuardTypography.title)
-                        .foregroundStyle(child.photoData == nil ? EGuardColors.textPrimary : .white)
-                    Text(child.ageDescription)
+                        .foregroundStyle(EGuardColors.textPrimary)
+                    Text(detail.child.ageDescription)
                         .font(EGuardTypography.caption)
-                        .foregroundStyle(child.photoData == nil ? EGuardColors.textSecondary : .white.opacity(0.9))
+                        .foregroundStyle(EGuardColors.textSecondary)
                 }
                 Spacer()
-                StatusPill(
-                    text: state == .active ? "Protected" : (state == .needsAttention ? "Attention" : "Not set up"),
-                    tint: EGuardTheme.color(for: state)
-                )
-                .background(.white.opacity(0.9), in: Capsule())
+                StatusPill(text: detail.child.status.title, tint: statusTint(detail.child.status))
+                    .background(.white.opacity(0.9), in: Capsule())
             }
             .padding(EGuardSpacing.md)
         }
@@ -108,145 +128,158 @@ struct ChildProfileView: View {
 
     // MARK: Sections
 
-    private func overview(_ child: ChildProfile) -> some View {
+    private func overview(_ detail: ChildDetail) -> some View {
         VStack(alignment: .leading, spacing: EGuardSpacing.md) {
             EGuardCard {
                 Text("Screen time today")
                     .font(EGuardTypography.label)
                     .foregroundStyle(EGuardColors.textSecondary)
                 HStack(alignment: .firstTextBaseline, spacing: EGuardSpacing.xs) {
-                    if model.authorizationStatus.isAuthorized && !model.environment.isSimulator {
-                        DeviceActivityReport(.eGuardToday, filter: DashboardViewModel().todayFilter())
-                            .frame(height: 36)
-                    } else {
-                        Text("—")
-                            .font(EGuardTypography.metric)
-                    }
-                    if let allowance = totalAllowanceText {
-                        Text("/ \(allowance)")
+                    Text(ProtectionConfigFormatter.duration(detail.today.minutes))
+                        .font(EGuardTypography.metric)
+                    if let limit = detail.today.limitMinutes {
+                        Text("/ \(ProtectionConfigFormatter.duration(limit))")
                             .font(EGuardTypography.callout)
                             .foregroundStyle(EGuardColors.textSecondary)
                     }
                 }
-                ProgressView(value: report.map { Double($0.passedCount) / Double(max($0.evaluatedCount, 1)) } ?? 0)
-                    .tint(EGuardColors.primary)
-                    .accessibilityLabel("Protection coverage")
-                Text(model.authorizationStatus.isAuthorized && !model.environment.isSimulator
-                     ? "Screen time is measured by Apple and shown here without leaving the device."
-                     : "Screen time appears on a real, authorized device.")
-                    .font(EGuardTypography.caption)
-                    .foregroundStyle(EGuardColors.textSecondary)
-            }
-
-            EGuardCard {
-                EGuardNavRow(title: "App usage", subtitle: appUsageSubtitle, symbolName: "square.grid.2x2.fill", tint: EGuardColors.success) {
-                    router.push(.appsManagement)
+                if let limit = detail.today.limitMinutes {
+                    ProgressView(value: Double(min(detail.today.minutes, limit)), total: Double(max(limit, 1)))
+                        .tint(EGuardColors.primary)
                 }
-                Divider()
-                EGuardNavRow(title: "Bedtime", subtitle: model.settings.downtime?.formatted ?? "Off", symbolName: ProtectionFeature.downtime.symbolName, tint: EGuardTheme.tint(for: .downtime)) {
-                    router.push(.featureDetail(.downtime))
-                }
-                Divider()
-                EGuardNavRow(title: "Location", subtitle: model.preferences.isLocationSharingEnabled ? "Sharing enabled" : "Sharing off", symbolName: "location.fill", tint: EGuardColors.success) {
-                    router.push(.location)
-                }
-                Divider()
-                EGuardNavRow(title: "Device protection", subtitle: EGuardTheme.grade(passed: report?.passedCount ?? 0, total: report?.evaluatedCount ?? 0), symbolName: "checkmark.shield.fill", tint: EGuardTheme.color(for: state)) {
-                    router.push(.healthReview)
-                }
-            }
-        }
-    }
-
-    private var activity: some View {
-        VStack(alignment: .leading, spacing: EGuardSpacing.md) {
-            EGuardCard {
-                SectionHeader(title: "Daily allowances")
-                if model.settings.gamingLimitMinutes == nil && model.settings.socialAppsLimitMinutes == nil {
-                    Text("No daily allowances are set.")
-                        .font(EGuardTypography.callout)
+                if detail.child.deviceCount == 0 {
+                    Text("Pair a device to see screen time.")
+                        .font(EGuardTypography.caption)
                         .foregroundStyle(EGuardColors.textSecondary)
                 }
-                if let minutes = model.settings.gamingLimitMinutes {
-                    EGuardNavRow(title: "Gaming", subtitle: ProtectionSettings.formatDailyAllowance(minutes), symbolName: ProtectionFeature.gaming.symbolName, tint: EGuardTheme.tint(for: .gaming)) {
-                        router.push(.featureDetail(.gaming))
-                    }
+            }
+
+            EGuardCard {
+                EGuardNavRow(title: "App usage", subtitle: detail.today.appsUsed == 0 ? "No apps used today" : "\(detail.today.appsUsed) apps today" + (detail.pendingApprovals > 0 ? " · \(detail.pendingApprovals) waiting for approval" : ""), symbolName: "square.grid.2x2.fill", tint: EGuardColors.success) {
+                    router.push(.appsManagement(childId: childId))
                 }
-                if let minutes = model.settings.socialAppsLimitMinutes {
-                    Divider()
-                    EGuardNavRow(title: "Social apps", subtitle: ProtectionSettings.formatDailyAllowance(minutes), symbolName: ProtectionFeature.socialApps.symbolName, tint: EGuardTheme.tint(for: .socialApps)) {
-                        router.push(.featureDetail(.socialApps))
-                    }
+                Divider()
+                EGuardNavRow(title: "Bedtime", subtitle: detail.bedtime?.label ?? "Off", symbolName: "moon.zzz.fill", tint: EGuardColors.tilePurple) {
+                    router.push(.protectionEditor(childId: childId, key: "BEDTIME"))
+                }
+                Divider()
+                EGuardNavRow(title: "Location", subtitle: detail.location.label, symbolName: "location.fill", tint: EGuardColors.success) {
+                    router.push(.location(childId: childId))
+                }
+                Divider()
+                EGuardNavRow(title: "Device protection", subtitle: "\(detail.deviceProtection.label) · \(detail.health.healthScore.text)", symbolName: "checkmark.shield.fill", tint: statusTint(detail.child.status)) {
+                    router.push(.healthCheck(childId: childId, isOnboarding: false))
                 }
             }
-            Button("Open Screen Time") { router.push(.screenTime) }
-                .buttonStyle(.eGuardPrimary)
-        }
-    }
 
-    private var apps: some View {
-        VStack(alignment: .leading, spacing: EGuardSpacing.md) {
-            EGuardCard {
-                EGuardValueRow(label: "Gaming apps", value: model.selections.gaming.summary)
-                Divider()
-                EGuardValueRow(label: "Social apps", value: model.selections.socialApps.summary)
-                Divider()
-                EGuardValueRow(label: "Always blocked", value: model.selections.restrictedApps.summary)
-                Divider()
-                EGuardValueRow(label: "New app downloads", value: model.settings.appInstallation.title)
-            }
-            Button("Manage Apps") { router.push(.appsManagement) }
-                .buttonStyle(.eGuardPrimary)
-        }
-    }
-
-    private var protection: some View {
-        VStack(alignment: .leading, spacing: EGuardSpacing.md) {
-            EGuardCard {
-                if let report, !report.checks.isEmpty {
-                    ForEach(report.checks) { check in
-                        Button {
-                            router.push(.featureDetail(check.feature))
-                        } label: {
-                            HStack {
-                                ChecklistRow(title: check.feature.title, detail: model.settings.summary(for: check.feature), status: check.status)
-                                Image(systemName: "chevron.right")
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundStyle(EGuardColors.neutral)
-                            }
-                            .contentShape(Rectangle())
+            if !detail.devices.isEmpty {
+                EGuardCard {
+                    SectionHeader(title: "Devices")
+                    ForEach(detail.devices) { device in
+                        EGuardNavRow(title: device.name, subtitle: "\(device.state.title) · \(device.lastSeenLabel ?? "")", symbolName: device.symbolName, tint: device.state == .healthy ? EGuardColors.success : EGuardColors.warning) {
+                            router.push(.deviceDetail(deviceId: device.id))
                         }
-                        .buttonStyle(.plain)
-                        if check.id != report.checks.last?.id { Divider() }
+                        if device.id != detail.devices.last?.id { Divider() }
                     }
-                } else {
-                    Text("No protections are configured yet.")
+                }
+            } else {
+                Button("Set Up Supervision") { router.push(.setupProgress(childId: childId, profile: "PROTECTED", overrides: [])) }
+                    .buttonStyle(.eGuardPrimary)
+            }
+        }
+    }
+
+    private func activity(_ detail: ChildDetail) -> some View {
+        VStack(alignment: .leading, spacing: EGuardSpacing.md) {
+            EGuardCard {
+                SectionHeader(title: "Top apps today")
+                if detail.today.topApps.isEmpty {
+                    Text("No activity recorded today.")
                         .font(EGuardTypography.callout)
                         .foregroundStyle(EGuardColors.textSecondary)
                 }
+                ForEach(detail.today.topApps) { app in
+                    EGuardValueRow(label: app.name, value: ProtectionConfigFormatter.duration(app.minutes))
+                }
             }
-            Button("Manage Protection") { router.push(.manageProtection) }
+            Button("Open Screen Time") { router.push(.screenTime(childId: childId)) }
                 .buttonStyle(.eGuardPrimary)
         }
     }
 
-    // MARK: Helpers
-
-    private var totalAllowanceText: String? {
-        let total = (model.settings.gamingLimitMinutes ?? 0) + (model.settings.socialAppsLimitMinutes ?? 0)
-        guard total > 0 else { return nil }
-        return ProtectionSettings.formatDailyAllowance(total).replacingOccurrences(of: " / day", with: "")
+    private func apps(_ detail: ChildDetail) -> some View {
+        VStack(alignment: .leading, spacing: EGuardSpacing.md) {
+            EGuardCard {
+                EGuardValueRow(label: "Apps used today", value: "\(detail.today.appsUsed)")
+                Divider()
+                EGuardValueRow(label: "Waiting for approval", value: "\(detail.pendingApprovals)")
+            }
+            Button(detail.pendingApprovals > 0 ? "Review \(detail.pendingApprovals) Request\(detail.pendingApprovals == 1 ? "" : "s")" : "Manage Apps") {
+                router.push(.appsManagement(childId: childId))
+            }
+            .buttonStyle(.eGuardPrimary)
+        }
     }
 
-    private var appUsageSubtitle: String {
-        let count = model.selections.gaming.applicationCount + model.selections.socialApps.applicationCount + model.selections.restrictedApps.applicationCount
-        return count == 0 ? "No apps managed yet" : (count == 1 ? "1 app managed" : "\(count) apps managed")
+    private func protection(_ detail: ChildDetail) -> some View {
+        VStack(alignment: .leading, spacing: EGuardSpacing.md) {
+            EGuardCard {
+                ForEach(detail.health.checks) { check in
+                    Button {
+                        router.push(.protectionEditor(childId: childId, key: check.key))
+                    } label: {
+                        HStack {
+                            ChecklistRow(title: check.name, detail: check.detail, status: check.status.healthStatus)
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(EGuardColors.neutral)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if check.id != detail.health.checks.last?.id { Divider() }
+                }
+            }
+            Button("Manage Protection") { router.push(.protections(childId: childId)) }
+                .buttonStyle(.eGuardPrimary)
+        }
+    }
+
+    @ViewBuilder
+    private var historySection: some View {
+        switch history {
+        case .loading:
+            LoadingCard()
+        case .failed(let message):
+            ErrorCard(message: message) { Task { history = await load { try await model.api.history(childId: childId, before: nil) } } }
+        case .loaded(let page):
+            EGuardCard {
+                if page.changes.isEmpty {
+                    Text("No configuration changes yet.")
+                        .font(EGuardTypography.callout)
+                        .foregroundStyle(EGuardColors.textSecondary)
+                }
+                ForEach(page.changes) { change in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(change.title).font(EGuardTypography.label)
+                        if let from = change.fromValue, let to = change.toValue {
+                            Text("\(from) → \(to)").font(EGuardTypography.caption).foregroundStyle(EGuardColors.textSecondary)
+                        }
+                        Text("\(change.actor) · \(change.timeLabel ?? change.createdAt.verifiedDescription())")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
+                    .padding(.vertical, EGuardSpacing.xxs)
+                    if change.id != page.changes.last?.id { Divider() }
+                }
+            }
+        }
     }
 }
 
 #Preview {
     NavigationStack {
-        ChildProfileView()
+        ChildProfileView(childId: "child_1")
     }
     .environment(AppModel.preview())
     .environment(AppRouter())

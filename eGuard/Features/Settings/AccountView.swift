@@ -1,76 +1,209 @@
 import SwiftUI
 
-/// Profile and login details for the parent's local account.
+/// Profile and login details, from `/me`.
 struct AccountView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
-    @State private var fullName = ""
+    @State private var name = ""
     @State private var email = ""
     @State private var hasLoaded = false
-    @State private var isConfirmingSignOut = false
+    @State private var isSaving = false
+    @State private var message: String?
+    @State private var errorMessage: String?
 
     private var validationMessage: String? {
-        AccountValidator.validateName(fullName) ?? AccountValidator.validateEmail(email)
+        AccountValidator.validateName(name) ?? AccountValidator.validateEmail(email)
     }
 
     var body: some View {
         EGuardScreen {
-            if let account = model.account {
+            if let user = model.user {
                 VStack(spacing: EGuardSpacing.sm) {
-                    AvatarView(name: account.fullName, size: 96)
-                    Text(account.fullName)
-                        .font(EGuardTypography.title)
-                    StatusPill(text: "Signed in with \(account.provider.title)", tint: EGuardColors.primary)
+                    AvatarView(name: user.name, size: 96)
+                    Text(user.name).font(EGuardTypography.title)
+                    StatusPill(text: user.role.title, tint: EGuardColors.primary)
                 }
                 .frame(maxWidth: .infinity)
 
-                VStack(spacing: EGuardSpacing.sm) {
-                    EGuardTextField(label: "Full name", placeholder: "Your name", text: $fullName, symbolName: "person", contentType: .name, autocapitalization: .words)
-                    EGuardTextField(label: "Email address", placeholder: "you@example.com", text: $email, symbolName: "envelope", contentType: .emailAddress, keyboard: .emailAddress)
-                        .disabled(account.provider != .email)
-                        .opacity(account.provider == .email ? 1 : 0.6)
-                }
+                VerifyEmailBanner()
 
-                if let validationMessage {
-                    Label(validationMessage, systemImage: "exclamationmark.circle.fill")
+                VStack(spacing: EGuardSpacing.sm) {
+                    EGuardTextField(label: "Full name", placeholder: "Your name", text: $name, symbolName: "person", contentType: .name, autocapitalization: .words)
+                    EGuardTextField(label: "Email address", placeholder: "you@example.com", text: $email, symbolName: "envelope", contentType: .emailAddress, keyboard: .emailAddress)
+                }
+                InlineError(message: errorMessage ?? validationMessage)
+                if let message {
+                    Label(message, systemImage: "checkmark.circle.fill")
                         .font(EGuardTypography.caption)
-                        .foregroundStyle(EGuardColors.danger)
+                        .foregroundStyle(EGuardColors.success)
                 }
 
                 EGuardCard {
-                    EGuardValueRow(label: "Member since", value: account.createdAt.formatted(date: .abbreviated, time: .omitted))
+                    EGuardNavRow(title: "Change password", subtitle: "Signs out your other devices", symbolName: "key.fill", tint: EGuardColors.tileOrange) {
+                        router.push(.changePassword)
+                    }
                     Divider()
-                    EGuardValueRow(label: "Stored", value: "On this device only")
+                    EGuardNavRow(title: "Signed-in devices", subtitle: "See and sign out other sessions", symbolName: "laptopcomputer.and.iphone", tint: EGuardColors.tileTeal) {
+                        router.push(.sessions)
+                    }
+                    Divider()
+                    EGuardNavRow(title: "Two-step verification", subtitle: "Coming soon", symbolName: "lock.shield.fill", tint: EGuardColors.tileGray, showsChevron: false)
+                }
+
+                EGuardCard {
+                    EGuardValueRow(label: "Family", value: user.family.name)
+                    Divider()
+                    EGuardValueRow(label: "Time zone", value: user.family.timezone)
+                    Divider()
+                    EGuardValueRow(label: "Member since", value: user.createdAt.formatted(date: .abbreviated, time: .omitted))
                 }
             } else {
-                EmptyStateView(symbolName: "person.crop.circle.badge.questionmark", title: "Not signed in", message: "Sign in or create an account to manage your profile.")
+                EmptyStateView(symbolName: "person.crop.circle.badge.questionmark", title: "Not signed in", message: "Sign in to manage your profile.")
             }
         } actions: {
-            if model.account != nil {
-                Button("Save Changes") { model.updateAccount(fullName: fullName, email: email) }
+            if model.user != nil {
+                Button(isSaving ? "Saving…" : "Save Changes") { Task { await save() } }
                     .buttonStyle(.eGuardPrimary)
-                    .disabled(validationMessage != nil)
-                Button("Sign Out") { isConfirmingSignOut = true }
-                    .buttonStyle(.eGuardText)
+                    .disabled(validationMessage != nil || isSaving || !hasChanges)
             }
         }
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            guard !hasLoaded, let account = model.account else { return }
+            guard !hasLoaded, let user = model.user else { return }
             hasLoaded = true
-            fullName = account.fullName
-            email = account.email
+            name = user.name
+            email = user.email
         }
-        .confirmationDialog("Sign out of eGuard?", isPresented: $isConfirmingSignOut, titleVisibility: .visible) {
-            Button("Sign Out", role: .destructive) {
-                model.signOut()
-                router.popToRoot()
+    }
+
+    private var hasChanges: Bool {
+        guard let user = model.user else { return false }
+        return name.trimmingCharacters(in: .whitespaces) != user.name || AccountValidator.normalizedEmail(email) != user.email
+    }
+
+    private func save() async {
+        guard let user = model.user else { return }
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            let emailChanged = AccountValidator.normalizedEmail(email) != user.email
+            _ = try await model.api.updateMe(
+                name: name.trimmingCharacters(in: .whitespaces) != user.name ? name.trimmingCharacters(in: .whitespaces) : nil,
+                email: emailChanged ? email : nil,
+                timezone: nil
+            )
+            await model.refreshUser()
+            errorMessage = nil
+            message = emailChanged ? "Saved. Check \(AccountValidator.normalizedEmail(email)) for a verification link." : "Saved."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+/// `POST /me/password`
+struct ChangePasswordView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(AppRouter.self) private var router
+    @State private var current = ""
+    @State private var next = ""
+    @State private var confirm = ""
+    @State private var errorMessage: String?
+    @State private var isSaving = false
+
+    private var validation: String? {
+        if current.isEmpty { return nil }
+        if let message = AccountValidator.validatePassword(next) { return message }
+        if next != confirm { return "The new passwords don't match." }
+        return nil
+    }
+
+    var body: some View {
+        EGuardScreen {
+            ScreenHeader(title: "Change password", subtitle: "Your other devices are signed out afterwards. This one stays signed in.")
+            VStack(spacing: EGuardSpacing.sm) {
+                EGuardTextField(label: "Current password", placeholder: "Current password", text: $current, symbolName: "lock", isSecure: true, contentType: .password)
+                EGuardTextField(label: "New password", placeholder: "At least 10 characters", text: $next, symbolName: "lock.rotation", isSecure: true)
+                EGuardTextField(label: "Confirm new password", placeholder: "Repeat the new password", text: $confirm, symbolName: "lock.rotation", isSecure: true)
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Protections stay active on this device. Sign back in to manage them.")
+            InlineError(message: errorMessage ?? validation)
+        } actions: {
+            Button(isSaving ? "Saving…" : "Change Password") { Task { await save() } }
+                .buttonStyle(.eGuardPrimary)
+                .disabled(current.isEmpty || next.isEmpty || validation != nil || isSaving)
         }
+        .navigationTitle("Password")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func save() async {
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            _ = try await model.api.changePassword(current: current, next: next)
+            router.pop()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+/// `GET /me/sessions` and `DELETE /me/sessions`
+struct SessionsView: View {
+    @Environment(AppModel.self) private var model
+    @State private var state: LoadState<[SessionInfo]> = .loading
+    @State private var message: String?
+
+    var body: some View {
+        EGuardScreen {
+            ScreenHeader(title: "Signed-in devices", subtitle: "Every device and browser with access to your family.")
+            switch state {
+            case .loading:
+                LoadingCard()
+            case .failed(let error):
+                ErrorCard(message: error) { Task { await loadSessions() } }
+            case .loaded(let sessions):
+                EGuardCard {
+                    ForEach(sessions) { session in
+                        HStack(spacing: EGuardSpacing.sm) {
+                            IconTile(symbolName: session.userAgent.localizedCaseInsensitiveContains("iphone") ? "iphone" : "laptopcomputer", tint: session.current ? EGuardColors.success : EGuardColors.neutral)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(session.userAgent).font(EGuardTypography.label).lineLimit(1)
+                                Text("Last seen \((session.lastSeenAt ?? session.createdAt).verifiedDescription())")
+                                    .font(EGuardTypography.caption)
+                                    .foregroundStyle(EGuardColors.textSecondary)
+                            }
+                            Spacer()
+                            if session.current { StatusPill(text: "This device", tint: EGuardColors.success) }
+                        }
+                        .padding(.vertical, EGuardSpacing.xxs)
+                        if session.id != sessions.last?.id { Divider() }
+                    }
+                }
+                if let message {
+                    Label(message, systemImage: "checkmark.circle.fill").font(EGuardTypography.caption).foregroundStyle(EGuardColors.success)
+                }
+            }
+        } actions: {
+            Button("Sign Out Other Devices") {
+                Task {
+                    if let count = try? await model.api.signOutOtherSessions() {
+                        message = count == 0 ? "No other sessions were signed in." : "Signed out \(count) other session\(count == 1 ? "" : "s")."
+                        await loadSessions()
+                    }
+                }
+            }
+            .buttonStyle(.eGuardSecondary)
+            .disabled((state.value?.count ?? 0) <= 1)
+        }
+        .navigationTitle("Sessions")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await loadSessions() }
+    }
+
+    private func loadSessions() async {
+        state = await load { try await model.api.sessions() }
     }
 }
 

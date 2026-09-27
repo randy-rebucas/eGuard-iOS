@@ -1,84 +1,93 @@
 import SwiftUI
 
-/// 05 Protection Profile
+/// 05 Protection Profile, from `GET /profiles?age=`.
 struct ProtectionProfileView: View {
+    let childId: String
+
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
-    @State private var selectedProfile: ProtectionProfile = .balanced
-    @State private var hasLoaded = false
+    @State private var state: LoadState<[ProfileOption]> = .loading
+    @State private var selected: String?
 
-    private var isEditing: Bool { model.isSetupComplete }
+    private var child: ChildSummary? { model.children.first { $0.id == childId } }
 
     var body: some View {
         EGuardScreen {
-            if !isEditing {
-                OnboardingProgressIndicator(step: .protectionProfile)
-            }
+            OnboardingProgressIndicator(step: .protectionProfile)
             ScreenHeader(
                 title: "Choose a protection profile",
                 subtitle: "You can change this anytime in the app."
             )
 
-            if let child = model.childProfile {
+            if let child {
                 HStack(spacing: EGuardSpacing.sm) {
-                    AvatarView(name: child.trimmedName, imageData: child.photoData, size: 40)
-                    Text("Recommendations are tuned for \(child.trimmedName), \(child.ageDescription).")
+                    ChildAvatar(child: child, size: 40)
+                    Text("Recommendations are tuned for \(child.name), \(child.ageDescription).")
                         .font(EGuardTypography.callout)
                         .foregroundStyle(EGuardColors.textSecondary)
                 }
             }
 
-            VStack(spacing: EGuardSpacing.sm) {
-                ForEach(ProtectionProfile.allCases) { profile in
-                    SelectableOptionRow(
-                        title: profile.title,
-                        subtitle: subtitle(for: profile),
-                        symbolName: profile.symbolName,
-                        tint: EGuardTheme.tint(for: profile),
-                        isSelected: selectedProfile == profile
-                    ) {
-                        selectedProfile = profile
+            switch state {
+            case .loading:
+                LoadingCard()
+            case .failed(let message):
+                ErrorCard(message: message) { Task { await loadProfiles() } }
+            case .loaded(let profiles):
+                VStack(spacing: EGuardSpacing.sm) {
+                    ForEach(profiles) { profile in
+                        SelectableOptionRow(
+                            title: profile.recommended ? "\(profile.name) · Recommended" : profile.name,
+                            subtitle: profile.description,
+                            symbolName: LucideIcon.symbol(for: profile.icon),
+                            tint: tint(for: profile.id),
+                            isSelected: selected == profile.id
+                        ) {
+                            selected = profile.id
+                        }
+                        .accessibilityIdentifier("profile.option.\(profile.id.lowercased())")
                     }
-                    .accessibilityIdentifier("profile.option.\(profile.rawValue)")
                 }
+                Text("All profiles keep every protection on. You can change each value on the next screen.")
+                    .font(EGuardTypography.caption)
+                    .foregroundStyle(EGuardColors.textSecondary)
             }
-
-            Text("You can change every recommendation on the next screen.")
-                .font(EGuardTypography.caption)
-                .foregroundStyle(EGuardColors.textSecondary)
         } actions: {
             Button("Continue") {
-                model.chooseProfile(selectedProfile)
-                router.push(.recommendedSetup)
+                if let selected {
+                    router.push(.recommendedSetup(childId: childId, profile: selected))
+                }
             }
             .buttonStyle(.eGuardPrimary)
+            .disabled(selected == nil)
             .accessibilityIdentifier("profile.continue")
         }
         .brandNavigationTitle()
-        .onAppear {
-            guard !hasLoaded else { return }
-            hasLoaded = true
-            if model.settings != .off || model.settings.profile != .custom {
-                selectedProfile = model.settings.profile
-            } else if let age = model.childProfile?.age, age < 10 {
-                selectedProfile = .protected
-            }
+        .task { await loadProfiles() }
+    }
+
+    private func loadProfiles() async {
+        state = .loading
+        let age = child?.age ?? 12
+        state = await load { try await model.api.profiles(age: age) }
+        if selected == nil, let profiles = state.value {
+            selected = profiles.first { $0.recommended }?.id ?? profiles.first?.id
         }
     }
 
-    private func subtitle(for profile: ProtectionProfile) -> String {
-        switch profile {
-        case .balanced: "Moderate limits for independent kids"
-        case .protected: "Stronger controls for younger children"
-        case .custom: "Choose settings yourself"
+    private func tint(for id: String) -> Color {
+        switch id {
+        case "BALANCED": EGuardColors.tileYellow
+        case "PROTECTED": EGuardColors.success
+        default: EGuardColors.tileGray
         }
     }
 }
 
 #Preview {
     NavigationStack {
-        ProtectionProfileView()
+        ProtectionProfileView(childId: "child_1")
     }
-    .environment(AppModel.mock())
+    .environment(AppModel.preview())
     .environment(AppRouter())
 }

@@ -1,225 +1,223 @@
-import FamilyControls
-import ManagedSettings
 import Observation
 import SwiftUI
 
-/// Manages which selected apps are always shielded. Apple never reveals installed apps to eGuard,
-/// so the list is built from the apps the parent chose in Apple's picker.
+/// Loads a child's apps and applies rule changes.
 @Observable
 final class AppsManagementViewModel {
-    enum Tab: String, CaseIterable {
-        case managed = "Managed"
-        case blocked = "Blocked"
+    var filter: AppsFilter = .installed
+    var state: LoadState<AppsResponse> = .loading
+    var isAdding = false
+    var newAppName = ""
+    var newAppApproval: AppApproval = .allowed
+    var errorMessage: String?
+    var limitEditing: ChildApp?
+
+    func load(childId: String, api: EGuardAPIService) async {
+        if state.value == nil { state = .loading }
+        state = await MyApp.load { try await api.apps(childId: childId, filter: filter) }
     }
 
-    var tab: Tab = .managed
-    var isChoosingApps = false
-
-    func selection(_ purpose: SelectionPurpose, model: AppModel) -> FamilyActivitySelection {
-        ActivitySelectionCodec.selection(from: model.selections[purpose]) ?? FamilyActivitySelection(includeEntireCategory: true)
-    }
-
-    /// Every app the parent has selected for any purpose.
-    func managedApps(model: AppModel) -> [ApplicationToken] {
-        var tokens = Set<ApplicationToken>()
-        for purpose in [SelectionPurpose.gaming, .socialApps, .restrictedApps] {
-            tokens.formUnion(selection(purpose, model: model).applicationTokens)
+    func setAllowed(_ allowed: Bool, app: ChildApp, childId: String, api: EGuardAPIService) async {
+        do {
+            _ = try await api.updateApp(id: app.id, patch: AppPatch(approval: allowed ? .allowed : .blocked))
+            await load(childId: childId, api: api)
+        } catch {
+            errorMessage = error.localizedDescription
         }
-        return Array(tokens)
     }
 
-    func managedCategories(model: AppModel) -> [ActivityCategoryToken] {
-        var tokens = Set<ActivityCategoryToken>()
-        for purpose in [SelectionPurpose.gaming, .socialApps, .restrictedApps] {
-            tokens.formUnion(selection(purpose, model: model).categoryTokens)
+    func setLimit(_ minutes: Int?, app: ChildApp, childId: String, api: EGuardAPIService) async {
+        do {
+            _ = try await api.updateApp(id: app.id, patch: AppPatch(approval: nil, dailyLimitMinutes: minutes, removeLimit: minutes == nil))
+            await load(childId: childId, api: api)
+        } catch {
+            errorMessage = error.localizedDescription
         }
-        return Array(tokens)
     }
 
-    func blockedApps(model: AppModel) -> [ApplicationToken] {
-        Array(selection(.restrictedApps, model: model).applicationTokens)
-    }
-
-    func blockedCategories(model: AppModel) -> [ActivityCategoryToken] {
-        Array(selection(.restrictedApps, model: model).categoryTokens)
-    }
-
-    func isBlocked(_ token: ApplicationToken, model: AppModel) -> Bool {
-        selection(.restrictedApps, model: model).applicationTokens.contains(token)
-    }
-
-    func isBlocked(_ token: ActivityCategoryToken, model: AppModel) -> Bool {
-        selection(.restrictedApps, model: model).categoryTokens.contains(token)
-    }
-
-    func setBlocked(_ blocked: Bool, app token: ApplicationToken, model: AppModel) {
-        var restricted = selection(.restrictedApps, model: model)
-        if blocked { restricted.applicationTokens.insert(token) } else { restricted.applicationTokens.remove(token) }
-        apply(restricted, model: model)
-    }
-
-    func setBlocked(_ blocked: Bool, category token: ActivityCategoryToken, model: AppModel) {
-        var restricted = selection(.restrictedApps, model: model)
-        if blocked { restricted.categoryTokens.insert(token) } else { restricted.categoryTokens.remove(token) }
-        apply(restricted, model: model)
-    }
-
-    /// Saves the shield list and re-applies it immediately so the change is real, not just recorded.
-    private func apply(_ restricted: FamilyActivitySelection, model: AppModel) {
-        let snapshot = ActivitySelectionCodec.snapshot(from: restricted)
-        model.updateSelection(snapshot, for: .restrictedApps)
-        var settings = model.settings
-        settings.restrictSelectedApps = !snapshot.isEmpty
-        model.updateSettings(settings)
-        if snapshot.isEmpty {
-            try? model.restrictions.applyAppRestrictions(.empty)
-        } else if model.authorizationStatus.isAuthorized {
-            model.configure(.appRestrictions)
+    func addApp(childId: String, api: EGuardAPIService) async -> Bool {
+        do {
+            _ = try await api.addApp(childId: childId, name: newAppName.trimmingCharacters(in: .whitespaces), approval: newAppApproval, dailyLimitMinutes: nil)
+            newAppName = ""
+            await load(childId: childId, api: api)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
         }
     }
 }
 
-/// 13 Apps Management
+/// 13 App Management, from `GET /children/{id}/apps?filter=`.
 struct AppsManagementView: View {
-    @Environment(AppModel.self) private var model
-    @Environment(AppRouter.self) private var router
-    @State private var viewModel = AppsManagementViewModel()
+    let childId: String
 
-    private var pickerAvailable: Bool {
-        model.authorizationStatus.isAuthorized && !model.environment.isSimulator
-    }
+    @Environment(AppModel.self) private var model
+    @State private var viewModel = AppsManagementViewModel()
 
     var body: some View {
         @Bindable var viewModel = viewModel
 
         EGuardScreen {
-            PillSegmentedControl(options: AppsManagementViewModel.Tab.allCases, selection: $viewModel.tab) { $0.rawValue }
-
-            switch viewModel.tab {
-            case .managed: managedList
-            case .blocked: blockedList
+            PillSegmentedControl(options: AppsFilter.allCases, selection: $viewModel.filter) { filter in
+                if let counts = viewModel.state.value?.counts {
+                    let count = switch filter {
+                    case .installed: counts.installed
+                    case .blocked: counts.blocked
+                    case .pending: counts.pending
+                    }
+                    return count > 0 ? "\(filter.title) (\(count))" : filter.title
+                }
+                return filter.title
             }
 
+            switch viewModel.state {
+            case .loading:
+                LoadingCard()
+            case .failed(let message):
+                ErrorCard(message: message) { Task { await viewModel.load(childId: childId, api: model.api) } }
+            case .loaded(let response):
+                if response.apps.isEmpty {
+                    EGuardCard {
+                        EmptyStateView(symbolName: "square.grid.2x2", title: emptyTitle, message: emptyMessage, tint: EGuardColors.tilePurple)
+                    }
+                } else {
+                    EGuardCard {
+                        ForEach(response.apps) { app in
+                            appRow(app)
+                            if app.id != response.apps.last?.id { Divider() }
+                        }
+                    }
+                }
+            }
+
+            InlineError(message: viewModel.errorMessage)
+
             EGuardCard {
-                Label("Apple shows app names and icons here without telling eGuard which apps they are. Blocked apps are shielded at all times.", systemImage: "lock.shield")
+                Label("Switch an app off to block it. Approving or declining a request also clears its alert. Devices pick up changes on their next sync, within about 5 minutes.", systemImage: "info.circle.fill")
                     .font(EGuardTypography.caption)
                     .foregroundStyle(EGuardColors.textSecondary)
             }
         } actions: {
-            Button("Request to Install App") { router.push(.featureDetail(.appInstallation)) }
+            Button("Request to Install App") { viewModel.isAdding = true }
                 .buttonStyle(.eGuardPrimary)
                 .accessibilityIdentifier("apps.requestInstall")
-            Button(pickerAvailable ? "Choose Apps to Manage" : "App picker needs a real device") {
-                viewModel.isChoosingApps = true
-            }
-            .buttonStyle(.eGuardText)
-            .disabled(!pickerAvailable)
         }
         .navigationTitle("App Management")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $viewModel.isChoosingApps) {
-            AppSelectionView(purpose: .restrictedApps)
+        .task(id: viewModel.filter) { await viewModel.load(childId: childId, api: model.api) }
+        .alert("Add an app", isPresented: $viewModel.isAdding) {
+            TextField("App name", text: $viewModel.newAppName)
+            Button("Add") { Task { _ = await viewModel.addApp(childId: childId, api: model.api) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The app is allowed ahead of time, so your child can install it without asking.")
         }
-    }
-
-    @ViewBuilder
-    private var managedList: some View {
-        let apps = viewModel.managedApps(model: model)
-        let categories = viewModel.managedCategories(model: model)
-        if apps.isEmpty && categories.isEmpty {
-            emptyState(
-                title: "No managed apps yet",
-                message: pickerAvailable
-                    ? "Choose the apps that daily allowances and shields apply to."
-                    : "Apple's app picker is available on a real, authorized device."
-            )
-        } else {
-            EGuardCard {
-                ForEach(apps, id: \.self) { token in
-                    appRow(token, isBlocked: viewModel.isBlocked(token, model: model)) { blocked in
-                        viewModel.setBlocked(blocked, app: token, model: model)
-                    }
-                    Divider()
-                }
-                ForEach(categories, id: \.self) { token in
-                    categoryRow(token, isBlocked: viewModel.isBlocked(token, model: model)) { blocked in
-                        viewModel.setBlocked(blocked, category: token, model: model)
-                    }
-                    if token != categories.last { Divider() }
-                }
+        .sheet(item: $viewModel.limitEditing) { app in
+            AppLimitSheet(app: app) { minutes in
+                Task { await viewModel.setLimit(minutes, app: app, childId: childId, api: model.api) }
             }
+            .presentationDetents([.medium])
         }
     }
 
-    @ViewBuilder
-    private var blockedList: some View {
-        let apps = viewModel.blockedApps(model: model)
-        let categories = viewModel.blockedCategories(model: model)
-        if apps.isEmpty && categories.isEmpty {
-            emptyState(
-                title: "Nothing is blocked",
-                message: "Turn on Blocked for an app in the Managed list, or choose apps to shield at all times."
-            )
-        } else {
-            EGuardCard {
-                ForEach(apps, id: \.self) { token in
-                    appRow(token, isBlocked: true) { blocked in
-                        viewModel.setBlocked(blocked, app: token, model: model)
-                    }
-                    Divider()
-                }
-                ForEach(categories, id: \.self) { token in
-                    categoryRow(token, isBlocked: true) { blocked in
-                        viewModel.setBlocked(blocked, category: token, model: model)
-                    }
-                    if token != categories.last { Divider() }
-                }
-            }
+    private var emptyTitle: String {
+        switch viewModel.filter {
+        case .installed: "No apps yet"
+        case .blocked: "Nothing is blocked"
+        case .pending: "No requests waiting"
         }
     }
 
-    private func appRow(_ token: ApplicationToken, isBlocked: Bool, onToggle: @escaping (Bool) -> Void) -> some View {
+    private var emptyMessage: String {
+        switch viewModel.filter {
+        case .installed: "Apps appear here as soon as the paired device reports them."
+        case .blocked: "Switch an app off in the Installed list to block it."
+        case .pending: "When your child asks for an app, it shows up here for approval."
+        }
+    }
+
+    private func appRow(_ app: ChildApp) -> some View {
         HStack(spacing: EGuardSpacing.sm) {
-            Label(token)
-                .labelStyle(.titleAndIcon)
-                .font(EGuardTypography.label)
+            IconTile(symbolName: "app.fill", tint: app.approval == .blocked ? EGuardColors.danger : (app.approval == .pending ? EGuardColors.warning : EGuardColors.primary))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(app.name).font(EGuardTypography.label)
+                Text(app.subtitle)
+                    .font(EGuardTypography.caption)
+                    .foregroundStyle(app.approval == .blocked ? EGuardColors.danger : EGuardColors.textSecondary)
+            }
             Spacer()
-            Text(isBlocked ? "Blocked" : "Allowed")
-                .font(EGuardTypography.caption)
-                .foregroundStyle(isBlocked ? EGuardColors.danger : EGuardColors.textSecondary)
-            Toggle("Blocked", isOn: Binding(get: { isBlocked }, set: onToggle))
+            if app.approval == .pending {
+                Button("Decline") { Task { await viewModel.setAllowed(false, app: app, childId: childId, api: model.api) } }
+                    .font(EGuardTypography.label)
+                    .foregroundStyle(EGuardColors.danger)
+                Button("Approve") { Task { await viewModel.setAllowed(true, app: app, childId: childId, api: model.api) } }
+                    .font(EGuardTypography.label)
+                    .foregroundStyle(EGuardColors.primary)
+            } else {
+                Toggle("Allowed", isOn: Binding(
+                    get: { app.allowed },
+                    set: { value in Task { await viewModel.setAllowed(value, app: app, childId: childId, api: model.api) } }
+                ))
                 .labelsHidden()
                 .tint(EGuardColors.primary)
+            }
         }
         .padding(.vertical, EGuardSpacing.xxs)
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button("Set daily limit", systemImage: "hourglass") { viewModel.limitEditing = app }
+            if app.dailyLimitMinutes != nil {
+                Button("Remove limit", systemImage: "hourglass.badge.minus") { Task { await viewModel.setLimit(nil, app: app, childId: childId, api: model.api) } }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("apps.row.\(app.id)")
+    }
+}
+
+/// Picks a per-app daily limit.
+struct AppLimitSheet: View {
+    let app: ChildApp
+    let onSave: (Int?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var minutes: Int
+
+    init(app: ChildApp, onSave: @escaping (Int?) -> Void) {
+        self.app = app
+        self.onSave = onSave
+        _minutes = State(initialValue: app.dailyLimitMinutes ?? 60)
     }
 
-    private func categoryRow(_ token: ActivityCategoryToken, isBlocked: Bool, onToggle: @escaping (Bool) -> Void) -> some View {
-        HStack(spacing: EGuardSpacing.sm) {
-            Label(token)
-                .labelStyle(.titleAndIcon)
-                .font(EGuardTypography.label)
-            Spacer()
-            Text(isBlocked ? "Blocked" : "Allowed")
-                .font(EGuardTypography.caption)
-                .foregroundStyle(isBlocked ? EGuardColors.danger : EGuardColors.textSecondary)
-            Toggle("Blocked", isOn: Binding(get: { isBlocked }, set: onToggle))
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("Daily limit", selection: $minutes) {
+                    ForEach(ProtectionConfigEditor.minuteOptions, id: \.self) { option in
+                        Text(ProtectionConfigFormatter.duration(option)).tag(option)
+                    }
+                }
+                .pickerStyle(.inline)
                 .labelsHidden()
-                .tint(EGuardColors.primary)
-        }
-        .padding(.vertical, EGuardSpacing.xxs)
-    }
-
-    private func emptyState(title: String, message: String) -> some View {
-        EGuardCard {
-            EmptyStateView(symbolName: "square.grid.2x2", title: title, message: message, tint: EGuardColors.tilePurple)
+            }
+            .navigationTitle("\(app.name) limit")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave(minutes)
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }
 
 #Preview {
     NavigationStack {
-        AppsManagementView()
+        AppsManagementView(childId: "child_1")
     }
     .environment(AppModel.preview())
     .environment(AppRouter())

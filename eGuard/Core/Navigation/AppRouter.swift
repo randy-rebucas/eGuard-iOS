@@ -8,34 +8,39 @@ nonisolated enum AppRoute: Hashable, Sendable {
     case signIn
 
     // Onboarding
-    case childDevice
-    case protectionProfile
-    case recommendedSetup
-    case configureSettings
-    case healthCheck
-    case complete
+    case addChild
+    case editChild(childId: String)
+    case protectionProfile(childId: String)
+    case recommendedSetup(childId: String, profile: String)
+    case setupProgress(childId: String, profile: String, overrides: [JSONValue])
+    case healthCheck(childId: String?, isOnboarding: Bool)
+    case complete(childId: String, batchId: String?)
 
-    // Protection management
-    case manageProtection
-    case healthReview
-    case authorization
-    case featureDetail(ProtectionFeature)
+    // Protections
+    case protections(childId: String)
+    case protectionEditor(childId: String, key: String)
 
     // Child and activity
-    case childProfile
-    case screenTime
-    case appsManagement
-    case location
+    case childProfile(childId: String)
+    case screenTime(childId: String)
+    case appsManagement(childId: String)
+    case location(childId: String)
+    case deviceDetail(deviceId: String)
 
     // App sections
     case alerts
     case settings
     case account
+    case changePassword
+    case sessions
+    case family
     case notifications
     case privacy
     case about
     case subscription
     case helpSupport
+    case helpArticle(slug: String)
+    case supportTicket
 }
 
 /// The bottom tabs of the main app.
@@ -96,5 +101,25 @@ final class AppRouter {
     func show(_ tab: MainTab) {
         selectedTab = tab
         popToRoot()
+    }
+
+    /// Routes an alert's action button as the API describes.
+    func open(_ action: AlertAction) {
+        switch action.type {
+        case "FIX_SETTING":
+            if let childId = action.childId, let key = action.key { push(.protectionEditor(childId: childId, key: key)) }
+        case "VIEW_DEVICE":
+            if let deviceId = action.deviceId { push(.deviceDetail(deviceId: deviceId)) }
+        case "REVIEW_APPS":
+            if let childId = action.childId { push(.appsManagement(childId: childId)) }
+        case "VIEW_SCREEN_TIME":
+            if let childId = action.childId { push(.screenTime(childId: childId)) }
+        case "VIEW_HISTORY":
+            if let childId = action.childId { push(.childProfile(childId: childId)) }
+        case "MANAGE_SUBSCRIPTION":
+            push(.subscription)
+        default:
+            break
+        }
     }
 }

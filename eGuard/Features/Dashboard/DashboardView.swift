@@ -1,87 +1,36 @@
-import DeviceActivity
-import FamilyControls
-import ManagedSettings
-import Observation
 import SwiftUI
 
-/// Derives dashboard values from the shared app state.
-@Observable
-final class DashboardViewModel {
-    func greeting(now: Date = .now) -> String {
-        "\(now.greeting()), Parent"
-    }
-
-    func protectionTitle(model: AppModel) -> String {
-        if let child = model.childProfile {
-            return "\(child.trimmedName)'s Protection"
-        }
-        return "Protection"
-    }
-
-    /// One line describing how the family is doing, based on the verified report.
-    func statusLine(model: AppModel) -> String {
-        guard let report = model.lastHealthReport, report.evaluatedCount > 0 else {
-            return "Finish setting up protections to see your family's status."
-        }
-        switch report.protectionState {
-        case .active: return "Your family's digital safety looks good today."
-        case .needsAttention: return report.hasDrift
-            ? "A protection stopped working and needs your attention."
-            : "A few settings still need to be configured."
-        case .notConfigured: return "No protections are active yet."
-        }
-    }
-
-    func appsNeedingReview(model: AppModel) -> Int {
-        model.lastHealthReport?.attentionChecks.count ?? 0
-    }
-
-    /// Reports only exist for the current user on a real, authorized device.
-    func canShowActivityReports(model: AppModel) -> Bool {
-        model.authorizationStatus.isAuthorized && !model.environment.isSimulator
-    }
-
-    func todayFilter(applications: Set<ApplicationToken> = [], categories: Set<ActivityCategoryToken> = []) -> DeviceActivityFilter {
-        let calendar = Calendar.current
-        let interval = calendar.dateInterval(of: .day, for: .now)
-            ?? DateInterval(start: calendar.startOfDay(for: .now), duration: 24 * 60 * 60)
-        return DeviceActivityFilter(
-            segment: .daily(during: interval),
-            devices: nil,
-            applications: applications,
-            categories: categories,
-            webDomains: []
-        )
-    }
-}
-
-/// 10 Dashboard: the parent's home tab after setup.
+/// 10 Dashboard: one `GET /dashboard` for the whole Home tab.
 struct DashboardView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
-    @State private var viewModel = DashboardViewModel()
 
-    private var report: ConfigurationHealthReport? { model.lastHealthReport }
+    private var dashboard: Dashboard? { model.dashboard }
 
     var body: some View {
         TabScreen {
             header
         } content: {
             if !model.isOnline {
-                OfflineBanner(lastVerified: report?.generatedAt)
+                OfflineBanner(lastVerified: nil)
+            }
+            VerifyEmailBanner()
+
+            if let error = model.refreshError {
+                ErrorCard(message: error) { Task { await model.refreshDashboard() } }
             }
 
-            if let report, report.hasDrift {
-                driftCard
+            if let dashboard {
+                familyProtectionCard(dashboard)
+                childrenSection(dashboard)
+                alertsSection(dashboard)
+            } else {
+                LoadingCard()
             }
-
-            familyProtectionCard
-            childrenSection
-            todayCard
-            alertsSection
         }
         .background(EGuardColors.heroGradient.ignoresSafeArea())
-        .onAppear { model.performHealthCheck() }
+        .refreshable { await model.refreshDashboard() }
+        .task { await model.refreshDashboard() }
     }
 
     // MARK: Header
@@ -94,17 +43,17 @@ struct DashboardView: View {
                 Button {
                     router.push(.settings)
                 } label: {
-                    AvatarView(name: model.account?.fullName ?? "Parent", size: 40)
+                    AvatarView(name: model.user?.name ?? "Parent", size: 40)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Settings")
                 .accessibilityIdentifier("dashboard.settings")
             }
-            Text(model.account?.firstName ?? viewModel.greeting())
+            Text(model.user?.firstName ?? dashboard?.greeting ?? "Welcome")
                 .font(EGuardTypography.display)
                 .foregroundStyle(EGuardColors.textPrimary)
                 .accessibilityAddTraits(.isHeader)
-            Text(viewModel.statusLine(model: model))
+            Text(dashboard?.summary ?? "Loading your family's status…")
                 .font(EGuardTypography.body)
                 .foregroundStyle(EGuardColors.textSecondary)
         }
@@ -112,27 +61,12 @@ struct DashboardView: View {
 
     // MARK: Cards
 
-    private var driftCard: some View {
-        EGuardCard {
-            Label("Protection Needs Attention", systemImage: "exclamationmark.triangle.fill")
-                .font(EGuardTypography.headline)
-                .foregroundStyle(EGuardColors.warning)
-            Text("One or more settings may need to be reviewed.")
-                .font(EGuardTypography.callout)
-                .foregroundStyle(EGuardColors.textSecondary)
-            Button("Review Settings") { router.push(.healthReview) }
-                .buttonStyle(.eGuardSecondary)
-                .accessibilityIdentifier("dashboard.reviewSettings")
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("dashboard.drift")
-    }
-
-    private var familyProtectionCard: some View {
-        let tint = EGuardTheme.color(for: report?.protectionState ?? .notConfigured)
+    private func familyProtectionCard(_ dashboard: Dashboard) -> some View {
+        let health = dashboard.health
+        let tint: Color = health.score >= health.total ? EGuardColors.success : (health.score >= 5 ? EGuardColors.tileYellow : EGuardColors.danger)
         return EGuardCard {
             Button {
-                router.push(.healthReview)
+                router.push(.healthCheck(childId: nil, isOnboarding: false))
             } label: {
                 HStack(spacing: EGuardSpacing.md) {
                     IconTile(symbolName: "shield.fill", tint: EGuardColors.primary, size: 56, filled: true)
@@ -140,11 +74,11 @@ struct DashboardView: View {
                         Text("Family Protection")
                             .font(EGuardTypography.label)
                             .foregroundStyle(EGuardColors.textSecondary)
-                        Text(report?.scoreText ?? "—")
+                        Text(health.text)
                             .font(EGuardTypography.metric)
                             .foregroundStyle(EGuardColors.textPrimary)
                             .accessibilityIdentifier("dashboard.healthScore")
-                        Text(EGuardTheme.grade(passed: report?.passedCount ?? 0, total: report?.evaluatedCount ?? 0))
+                        Text(health.grade)
                             .font(EGuardTypography.label)
                             .foregroundStyle(tint)
                     }
@@ -158,157 +92,83 @@ struct DashboardView: View {
             .accessibilityIdentifier("dashboard.viewHealth")
 
             HStack(spacing: EGuardSpacing.xs) {
-                Button("Manage Protection") { router.push(.manageProtection) }
-                    .buttonStyle(.eGuardPrimary)
-                    .accessibilityIdentifier("dashboard.manageProtection")
-                Button("Health Check") { router.push(.healthReview) }
+                Button("Manage Protection") {
+                    if let first = dashboard.children.first {
+                        router.push(dashboard.children.count == 1 ? .protections(childId: first.id) : .childProfile(childId: first.id))
+                    }
+                }
+                .buttonStyle(.eGuardPrimary)
+                .accessibilityIdentifier("dashboard.manageProtection")
+                Button("Health Check") { router.push(.healthCheck(childId: nil, isOnboarding: false)) }
                     .buttonStyle(.eGuardSecondary)
             }
+            EGuardValueRow(label: "Devices", value: "\(dashboard.deviceCount)")
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("dashboard.protection")
     }
 
-    private var childrenSection: some View {
+    private func childrenSection(_ dashboard: Dashboard) -> some View {
         VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
             SectionHeader(title: "Your Children", actionTitle: "View All") {
                 router.show(.children)
             }
-            HStack(alignment: .top, spacing: EGuardSpacing.lg) {
-                if let child = model.childProfile {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: EGuardSpacing.lg) {
+                    ForEach(dashboard.children) { child in
+                        Button {
+                            router.push(.childProfile(childId: child.id))
+                        } label: {
+                            VStack(spacing: EGuardSpacing.xs) {
+                                ChildAvatar(child: child, size: 64)
+                                Text(child.name)
+                                    .font(EGuardTypography.label)
+                                    .foregroundStyle(EGuardColors.textPrimary)
+                                StatusPill(text: child.status.title, tint: statusTint(child.status))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("dashboard.child.\(child.id)")
+                    }
                     Button {
-                        router.push(.childProfile)
+                        router.push(.addChild)
                     } label: {
                         VStack(spacing: EGuardSpacing.xs) {
-                            AvatarView(name: child.trimmedName, imageData: child.photoData, size: 64)
-                            Text(child.trimmedName)
+                            Image(systemName: "plus")
+                                .font(.title3.weight(.semibold))
+                                .foregroundStyle(EGuardColors.primary)
+                                .frame(width: 64, height: 64)
+                                .background(EGuardColors.primarySoft, in: Circle())
+                            Text("Add child")
                                 .font(EGuardTypography.label)
                                 .foregroundStyle(EGuardColors.textPrimary)
-                            childStatusPill
                         }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityIdentifier("dashboard.child")
+                    .accessibilityIdentifier("dashboard.addChild")
                 }
-                Button {
-                    router.push(.childDevice)
-                } label: {
-                    VStack(spacing: EGuardSpacing.xs) {
-                        Image(systemName: model.childProfile == nil ? "plus" : "pencil")
-                            .font(.title3.weight(.semibold))
-                            .foregroundStyle(EGuardColors.primary)
-                            .frame(width: 64, height: 64)
-                            .background(EGuardColors.primarySoft, in: Circle())
-                        Text(model.childProfile == nil ? "Add child" : "Edit")
-                            .font(EGuardTypography.label)
-                            .foregroundStyle(EGuardColors.textPrimary)
-                    }
-                }
-                .buttonStyle(.plain)
-                Spacer()
+                .padding(.horizontal, 2)
             }
         }
     }
 
-    private var childStatusPill: some View {
-        let state = report?.protectionState ?? .notConfigured
-        return StatusPill(
-            text: state == .active ? "Protected" : (state == .needsAttention ? "Attention" : "Not set up"),
-            tint: EGuardTheme.color(for: state)
-        )
-    }
-
-    private var todayCard: some View {
-        EGuardCard {
-            SectionHeader(title: "Today's Protection", actionTitle: "Details") {
-                router.push(.screenTime)
-            }
-
-            if viewModel.canShowActivityReports(model: model) {
-                activityRow(label: "Screen Time", symbol: "clock.fill", tint: EGuardColors.primary, limit: nil, filter: viewModel.todayFilter())
-                if let minutes = model.settings.gamingLimitMinutes,
-                   let selection = ActivitySelectionCodec.selection(from: model.selections.gaming) {
-                    Divider()
-                    activityRow(
-                        label: "Gaming",
-                        symbol: ProtectionFeature.gaming.symbolName,
-                        tint: EGuardTheme.tint(for: .gaming),
-                        limit: ProtectionSettings.formatDailyAllowance(minutes),
-                        filter: viewModel.todayFilter(applications: selection.applicationTokens, categories: selection.categoryTokens)
-                    )
-                }
-                if let minutes = model.settings.socialAppsLimitMinutes,
-                   let selection = ActivitySelectionCodec.selection(from: model.selections.socialApps) {
-                    Divider()
-                    activityRow(
-                        label: "Social Apps",
-                        symbol: ProtectionFeature.socialApps.symbolName,
-                        tint: EGuardTheme.tint(for: .socialApps),
-                        limit: ProtectionSettings.formatDailyAllowance(minutes),
-                        filter: viewModel.todayFilter(applications: selection.applicationTokens, categories: selection.categoryTokens)
-                    )
-                }
-            } else {
-                Text(model.authorizationStatus.isAuthorized
-                     ? "Activity summaries are available on a real device."
-                     : "Grant Family Controls authorization to see today's activity summary.")
-                    .font(EGuardTypography.callout)
-                    .foregroundStyle(EGuardColors.textSecondary)
-            }
-
-            Divider()
-            EGuardNavRow(
-                title: "Bedtime",
-                subtitle: model.settings.downtime?.formatted ?? "Off",
-                symbolName: ProtectionFeature.downtime.symbolName,
-                tint: EGuardTheme.tint(for: .downtime)
-            ) {
-                router.push(.featureDetail(.downtime))
-            }
-        }
-    }
-
-    private func activityRow(label: String, symbol: String, tint: Color, limit: String?, filter: DeviceActivityFilter) -> some View {
-        HStack(spacing: EGuardSpacing.sm) {
-            IconTile(symbolName: symbol, tint: tint)
-            Text(label)
-                .font(EGuardTypography.label)
-                .foregroundStyle(EGuardColors.textPrimary)
-            Spacer()
-            // Apple renders the duration inside the sandboxed report extension.
-            DeviceActivityReport(.eGuardToday, filter: filter)
-                .frame(height: 24)
-            if let limit {
-                Text("/ \(limit.replacingOccurrences(of: " / day", with: ""))")
-                    .font(EGuardTypography.caption)
-                    .foregroundStyle(EGuardColors.textSecondary)
-            }
-        }
-        .padding(.vertical, EGuardSpacing.xxs)
-    }
-
-    private var alertsSection: some View {
+    private func alertsSection(_ dashboard: Dashboard) -> some View {
         VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
             SectionHeader(title: "Recent Alerts", actionTitle: "View All") {
                 router.show(.alerts)
             }
             EGuardCard {
-                if model.alerts.isEmpty {
-                    Text("No alerts yet. eGuard will tell you when a protection needs attention.")
+                if dashboard.recentAlerts.isEmpty {
+                    Text("No alerts. eGuard will tell you when a protection needs attention.")
                         .font(EGuardTypography.callout)
                         .foregroundStyle(EGuardColors.textSecondary)
                 } else {
-                    ForEach(Array(model.alerts.prefix(3))) { alert in
-                        AlertRow(alert: alert) {
-                            if let feature = alert.feature {
-                                router.push(.featureDetail(feature))
-                            } else {
-                                router.show(.alerts)
-                            }
+                    ForEach(dashboard.recentAlerts) { alert in
+                        APIAlertRow(alert: alert) {
+                            Task { _ = try? await model.api.markAlertRead(id: alert.id) }
+                            if let action = alert.action { router.open(action) } else { router.show(.alerts) }
                         }
-                        if alert.id != model.alerts.prefix(3).last?.id {
-                            Divider()
-                        }
+                        if alert.id != dashboard.recentAlerts.last?.id { Divider() }
                     }
                 }
             }
@@ -316,21 +176,29 @@ struct DashboardView: View {
     }
 }
 
-/// One alert line: tinted icon, title, detail, and relative time.
-struct AlertRow: View {
-    let alert: ProtectionAlert
+func statusTint(_ status: ChildStatus) -> Color {
+    switch status {
+    case .protected: EGuardColors.success
+    case .attention: EGuardColors.warning
+    case .notconfigured: EGuardColors.neutral
+    }
+}
+
+/// One server alert: icon tile by category, title, subject, and time.
+struct APIAlertRow: View {
+    let alert: APIAlert
     var action: (() -> Void)? = nil
 
     var body: some View {
         EGuardNavRow(
             title: alert.title,
-            subtitle: "\(alert.detail) · \(alert.date.relativeDescription())",
-            symbolName: alert.symbolName,
+            subtitle: [alert.subject, alert.timeLabel ?? alert.createdAt.relativeDescription()].compactMap { $0 }.joined(separator: " · "),
+            symbolName: LucideIcon.symbol(for: alert.icon, fallback: fallbackSymbol),
             tint: tint,
             showsChevron: action != nil,
             action: action
         ) {
-            if !alert.isRead {
+            if !alert.read {
                 Circle()
                     .fill(EGuardColors.primary)
                     .frame(width: 8, height: 8)
@@ -339,12 +207,27 @@ struct AlertRow: View {
         }
     }
 
-    private var tint: Color {
-        if let feature = alert.feature { return EGuardTheme.tint(for: feature) }
+    private var fallbackSymbol: String {
         switch alert.category {
-        case .protection: return EGuardColors.primary
-        case .apps: return EGuardColors.tilePurple
-        case .location: return EGuardColors.success
+        case .protection: "shield.lefthalf.filled"
+        case .apps: "square.grid.2x2.fill"
+        case .location: "location.fill"
+        case .devices: "iphone"
+        case .screenTime: "hourglass"
+        case .system: "info.circle.fill"
+        }
+    }
+
+    private var tint: Color {
+        switch alert.severity {
+        case .critical, .actionRequired: return EGuardColors.danger
+        case .attention: return EGuardColors.warning
+        case .info:
+            switch alert.category {
+            case .apps: return EGuardColors.tilePurple
+            case .location: return EGuardColors.success
+            default: return EGuardColors.primary
+            }
         }
     }
 }

@@ -1,11 +1,13 @@
 import SwiftUI
 import UserNotifications
 
-/// Notification permission and which alerts the parent wants.
+/// Notification preferences from `/me/notifications`, plus the iOS permission.
 struct NotificationsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
     @State private var status: UNAuthorizationStatus = .notDetermined
+    @State private var state: LoadState<NotificationPrefs> = .loading
+    @State private var errorMessage: String?
 
     var body: some View {
         EGuardScreen {
@@ -13,7 +15,7 @@ struct NotificationsView: View {
                 HStack(spacing: EGuardSpacing.sm) {
                     IconTile(symbolName: "bell.badge.fill", tint: EGuardColors.tileOrange, size: 44)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("System notifications")
+                        Text("Push notifications on this iPhone")
                             .font(EGuardTypography.headline)
                         Text(statusText)
                             .font(EGuardTypography.caption)
@@ -32,16 +34,26 @@ struct NotificationsView: View {
                 }
             }
 
-            EGuardCard {
-                SectionHeader(title: "Alert types")
-                toggle("Protection alerts", detail: "A protection stopped working or needs setup", symbol: "shield.lefthalf.filled", tint: EGuardColors.primary, keyPath: \.protectionAlertsEnabled)
-                Divider()
-                toggle("App alerts", detail: "Apps need to be chosen or a limit was reached", symbol: "square.grid.2x2.fill", tint: EGuardColors.tilePurple, keyPath: \.appAlertsEnabled)
-                Divider()
-                toggle("Weekly summary", detail: "A recap of configuration health every week", symbol: "calendar", tint: EGuardColors.tileTeal, keyPath: \.weeklySummaryEnabled)
+            switch state {
+            case .loading:
+                LoadingCard()
+            case .failed(let message):
+                ErrorCard(message: message) { Task { await loadPrefs() } }
+            case .loaded(let prefs):
+                EGuardCard {
+                    SectionHeader(title: "What eGuard sends you")
+                    toggle("Push alerts", detail: "Protection changes, device issues, approvals", symbol: "iphone.radiowaves.left.and.right", tint: EGuardColors.primary, value: prefs.notifyPush) { NotificationPrefsPatch(notifyPush: $0) }
+                    Divider()
+                    toggle("Email alerts", detail: "The same alerts by email", symbol: "envelope.fill", tint: EGuardColors.tileTeal, value: prefs.notifyEmail) { NotificationPrefsPatch(notifyEmail: $0) }
+                    Divider()
+                    toggle("App approval requests", detail: "When your child asks for an app", symbol: "square.grid.2x2.fill", tint: EGuardColors.tilePurple, value: prefs.notifyApproval) { NotificationPrefsPatch(notifyApproval: $0) }
+                    Divider()
+                    toggle("Weekly summary", detail: "A recap of screen time and health every week", symbol: "calendar", tint: EGuardColors.tileOrange, value: prefs.weeklySummary) { NotificationPrefsPatch(weeklySummary: $0) }
+                }
             }
+            InlineError(message: errorMessage)
 
-            Text("eGuard shows these alerts inside the app. System notifications are sent by Apple's Screen Time when downtime starts or an allowance runs out.")
+            Text("Push delivery is being rolled out on the eGuard server. Alerts always appear in the Alerts tab.")
                 .font(EGuardTypography.caption)
                 .foregroundStyle(EGuardColors.textSecondary)
         } actions: {
@@ -49,7 +61,10 @@ struct NotificationsView: View {
         }
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
+        .task {
+            await loadStatus()
+            await loadPrefs()
+        }
     }
 
     private var statusText: String {
@@ -61,10 +76,19 @@ struct NotificationsView: View {
         }
     }
 
-    private func toggle(_ title: String, detail: String, symbol: String, tint: Color, keyPath: WritableKeyPath<AppPreferences, Bool>) -> some View {
+    private func toggle(_ title: String, detail: String, symbol: String, tint: Color, value: Bool, patch: @escaping (Bool) -> NotificationPrefsPatch) -> some View {
         Toggle(isOn: Binding(
-            get: { model.preferences[keyPath: keyPath] },
-            set: { value in model.updatePreferences { $0[keyPath: keyPath] = value } }
+            get: { value },
+            set: { newValue in
+                Task {
+                    do {
+                        state = .loaded(try await model.api.updateNotificationPrefs(patch(newValue)))
+                        await model.refreshUser()
+                    } catch {
+                        errorMessage = error.localizedDescription
+                    }
+                }
+            }
         )) {
             HStack(spacing: EGuardSpacing.sm) {
                 IconTile(symbolName: symbol, tint: tint)
@@ -77,14 +101,21 @@ struct NotificationsView: View {
         .tint(EGuardColors.primary)
     }
 
-    private func load() async {
+    private func loadPrefs() async {
+        state = await load { try await model.api.notificationPrefs() }
+    }
+
+    private func loadStatus() async {
         status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
     }
 
     private func request() {
         Task {
             _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
-            await load()
+            await loadStatus()
+            if status == .authorized {
+                UIApplication.shared.registerForRemoteNotifications()
+            }
         }
     }
 }

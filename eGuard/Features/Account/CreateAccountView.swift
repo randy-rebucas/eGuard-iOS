@@ -2,44 +2,71 @@ import AuthenticationServices
 import Observation
 import SwiftUI
 
-/// Validates the sign-up form and creates the local account.
+/// Validates the sign-up form and registers the parent on the server.
 @Observable
 final class CreateAccountViewModel {
     var fullName = ""
     var email = ""
     var password = ""
+    var isGuardian = false
     var errorMessage: String?
+    var highlightedField: String?
+    var isSubmitting = false
     var isShowingGoogleNotice = false
 
     var validationMessage: String? {
         AccountValidator.validateName(fullName)
             ?? AccountValidator.validateEmail(email)
             ?? AccountValidator.validatePassword(password)
+            ?? (isGuardian ? nil : "Confirm that you're a parent or legal guardian, 18 or older.")
     }
 
-    var canSubmit: Bool { validationMessage == nil }
+    var canSubmit: Bool { validationMessage == nil && !isSubmitting }
 
-    func submit(to model: AppModel) -> Bool {
+    /// Creates the account. Returns true when the app should continue to Add Child.
+    func submit(model: AppModel) async -> Bool {
         guard canSubmit else {
             errorMessage = validationMessage
             return false
         }
-        model.createAccount(AccountValidator.makeEmailAccount(fullName: fullName, email: email, password: password))
-        errorMessage = nil
-        return true
+        isSubmitting = true
+        defer { isSubmitting = false }
+        do {
+            try await model.register(name: fullName, email: email, password: password)
+            errorMessage = nil
+            return true
+        } catch let error as APIError {
+            highlightedField = error.fieldName
+            errorMessage = error.code == "conflict"
+                ? "That email already has an eGuard account. Sign in instead."
+                : error.localizedDescription
+            return false
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
 
-    func handleApple(_ result: Result<ASAuthorization, Error>, model: AppModel) -> Bool {
+    func handleApple(_ result: Result<ASAuthorization, Error>, model: AppModel) async -> Bool {
         switch result {
         case .success(let authorization):
-            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                  let tokenData = credential.identityToken,
+                  let token = String(data: tokenData, encoding: .utf8) else {
                 errorMessage = AccountError.providerUnavailable(.apple).localizedDescription
                 return false
             }
             let formatter = PersonNameComponentsFormatter()
             let name = credential.fullName.map { formatter.string(from: $0) }
-            model.signIn(provider: .apple, fullName: name, email: credential.email)
-            return true
+            do {
+                isSubmitting = true
+                defer { isSubmitting = false }
+                try await model.signInWithApple(identityToken: token, fullName: name)
+                return true
+            } catch {
+                errorMessage = error.localizedDescription
+                return false
+            }
         case .failure(let error):
             if (error as? ASAuthorizationError)?.code == .canceled { return false }
             errorMessage = AccountError.providerUnavailable(.apple).localizedDescription
@@ -53,6 +80,10 @@ struct CreateAccountView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
     @State private var viewModel = CreateAccountViewModel()
+
+    private var signInOptions: AppInfo.SignInOptions {
+        model.appInfo?.signIn ?? AppInfo.SignInOptions(password: true, apple: true, google: false)
+    }
 
     var body: some View {
         @Bindable var viewModel = viewModel
@@ -86,7 +117,7 @@ struct CreateAccountView: View {
                 )
                 EGuardTextField(
                     label: "Password",
-                    placeholder: "At least 8 characters",
+                    placeholder: "At least 10 characters",
                     text: $viewModel.password,
                     symbolName: "lock",
                     isSecure: true,
@@ -94,57 +125,70 @@ struct CreateAccountView: View {
                 )
             }
 
-            if let message = viewModel.errorMessage {
-                Label(message, systemImage: "exclamationmark.circle.fill")
-                    .font(EGuardTypography.caption)
-                    .foregroundStyle(EGuardColors.danger)
-                    .accessibilityIdentifier("account.error")
+            Toggle(isOn: $viewModel.isGuardian) {
+                Text("I'm a parent or legal guardian, 18 or older.")
+                    .font(EGuardTypography.callout)
             }
+            .toggleStyle(CheckboxToggleStyle())
+            .accessibilityIdentifier("account.guardian")
 
-            Button("Create account") {
-                if viewModel.submit(to: model) {
-                    router.push(.childDevice)
+            InlineError(message: viewModel.errorMessage)
+
+            Button(viewModel.isSubmitting ? "Creating account…" : "Create account") {
+                Task {
+                    if await viewModel.submit(model: model) {
+                        router.push(.addChild)
+                    }
                 }
             }
             .buttonStyle(.eGuardPrimary)
+            .disabled(viewModel.isSubmitting)
             .accessibilityIdentifier("account.create")
 
-            orDivider
+            if signInOptions.apple || signInOptions.google {
+                orDivider
+            }
 
             VStack(spacing: EGuardSpacing.sm) {
-                SignInWithAppleButton(.continue) { request in
-                    request.requestedScopes = [.fullName, .email]
-                } onCompletion: { result in
-                    if viewModel.handleApple(result, model: model) {
-                        router.push(.childDevice)
+                if signInOptions.apple {
+                    SignInWithAppleButton(.continue) { request in
+                        request.requestedScopes = [.fullName, .email]
+                    } onCompletion: { result in
+                        Task {
+                            if await viewModel.handleApple(result, model: model) {
+                                router.push(.addChild)
+                            }
+                        }
                     }
+                    .signInWithAppleButtonStyle(.black)
+                    .frame(height: 50)
+                    .clipShape(EGuardShapes.button)
+                    .accessibilityIdentifier("account.apple")
                 }
-                .signInWithAppleButtonStyle(.black)
-                .frame(height: 50)
-                .clipShape(EGuardShapes.button)
-                .accessibilityIdentifier("account.apple")
 
-                Button {
-                    viewModel.isShowingGoogleNotice = true
-                } label: {
-                    Label {
-                        Text("Continue with Google")
-                    } icon: {
-                        Image(systemName: "g.circle.fill")
-                            .foregroundStyle(EGuardColors.danger)
+                if signInOptions.google {
+                    Button {
+                        viewModel.isShowingGoogleNotice = true
+                    } label: {
+                        Label {
+                            Text("Continue with Google")
+                        } icon: {
+                            Image(systemName: "g.circle.fill")
+                                .foregroundStyle(EGuardColors.danger)
+                        }
+                        .font(EGuardTypography.headline)
+                        .foregroundStyle(EGuardColors.textPrimary)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                        .background(EGuardColors.surface, in: EGuardShapes.button)
+                        .overlay(EGuardShapes.button.strokeBorder(EGuardColors.divider))
                     }
-                    .font(EGuardTypography.headline)
-                    .foregroundStyle(EGuardColors.textPrimary)
-                    .frame(maxWidth: .infinity, minHeight: 50)
-                    .background(EGuardColors.surface, in: EGuardShapes.button)
-                    .overlay(EGuardShapes.button.strokeBorder(EGuardColors.divider))
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("account.google")
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("account.google")
             }
 
             EGuardCard {
-                Label("Your account is stored securely on this device only. eGuard has no servers and never uploads family information.", systemImage: "lock.shield")
+                Label("Children never get accounts. You'll add them after signing up, and we'll email you a verification link.", systemImage: "lock.shield")
                     .font(EGuardTypography.caption)
                     .foregroundStyle(EGuardColors.textSecondary)
             }
@@ -162,7 +206,7 @@ struct CreateAccountView: View {
         .alert("Google sign-in not configured", isPresented: $viewModel.isShowingGoogleNotice) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("Google sign-in needs the Google Sign-In SDK and a client ID. Use email or Apple for now.")
+            Text("Google sign-in needs the Google Sign-In SDK and a client ID registered with the eGuard server. Use email or Apple for now.")
         }
     }
 
@@ -190,6 +234,28 @@ struct AccountStepProgress: View {
         }
         .frame(height: 5)
         .accessibilityHidden(true)
+    }
+}
+
+/// A checkbox-style toggle for confirmations.
+struct CheckboxToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            HStack(alignment: .top, spacing: EGuardSpacing.sm) {
+                Image(systemName: configuration.isOn ? "checkmark.square.fill" : "square")
+                    .font(.title3)
+                    .foregroundStyle(configuration.isOn ? EGuardColors.primary : EGuardColors.neutral)
+                configuration.label
+                    .foregroundStyle(EGuardColors.textPrimary)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(configuration.isOn ? [.isSelected] : [])
     }
 }
 

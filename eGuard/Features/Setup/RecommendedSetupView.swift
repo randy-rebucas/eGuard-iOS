@@ -1,298 +1,144 @@
 import Observation
 import SwiftUI
 
-/// Holds an editable draft of the recommended settings.
+/// Holds the server's recommendations and the parent's edits.
 @Observable
 final class RecommendedSetupViewModel {
-    var draft = ProtectionSettings.off
-    var editingFeature: ProtectionFeature?
-    private(set) var hasLoaded = false
+    var state: LoadState<Recommendations> = .loading
+    /// Current config per key, starting from the recommendation.
+    var configs: [String: JSONValue] = [:]
+    var editingKey: String?
 
-    static let allowanceOptions = [15, 30, 45, 60, 90, 120, 180]
-
-    func load(from model: AppModel) {
-        guard !hasLoaded else { return }
-        draft = model.settings
-        hasLoaded = true
-    }
-
-    func save(to model: AppModel) {
-        model.updateSettings(draft)
-    }
-
-    var moreProtections: [ProtectionFeature] {
-        [.appRestrictions, .purchases, .explicitContent, .deviceActivity, .screenTimePasscode]
-    }
-
-    func binding(for feature: ProtectionFeature) -> Bool {
-        draft.isEnabled(feature)
-    }
-
-    func setEnabled(_ enabled: Bool, for feature: ProtectionFeature) {
-        switch feature {
-        case .appRestrictions: draft.restrictSelectedApps = enabled
-        case .purchases: draft.requirePasswordForPurchases = enabled
-        case .explicitContent: draft.blockExplicitContent = enabled
-        case .deviceActivity: draft.monitorDeviceActivity = enabled
-        case .screenTimePasscode: draft.requireScreenTimePasscode = enabled
-        case .downtime:
-            draft.downtime = enabled
-                ? DowntimeWindow(start: TimeOfDay(hour: 21, minute: 30), end: TimeOfDay(hour: 6, minute: 0))
-                : nil
-        case .gaming: draft.gamingLimitMinutes = enabled ? 60 : nil
-        case .socialApps: draft.socialAppsLimitMinutes = enabled ? 60 : nil
-        case .webContent: draft.webContent = enabled ? .limited : .unrestricted
-        case .appInstallation: draft.appInstallation = enabled ? .parentApproval : .allowed
+    func load(childId: String, profile: String, api: EGuardAPIService) async {
+        state = .loading
+        state = await MyApp.load { try await api.recommendations(childId: childId, profile: profile) }
+        if let recommendations = state.value {
+            configs = Dictionary(uniqueKeysWithValues: recommendations.settings.map { ($0.key, $0.config) })
         }
+    }
+
+    func label(for key: String) -> String {
+        guard let config = configs[key] else { return "" }
+        return ProtectionConfigFormatter.label(key: key, config: config)
+    }
+
+    /// Configs the parent changed, each carrying its `key`, as the setup endpoint expects.
+    var overrides: [JSONValue] {
+        guard let recommendations = state.value else { return [] }
+        return recommendations.settings.compactMap { setting in
+            guard let edited = configs[setting.key], edited != setting.config else { return nil }
+            return edited.setting("key", to: .string(setting.key))
+        }
+    }
+
+    func binding(for key: String) -> Binding<JSONValue> {
+        Binding(
+            get: { self.configs[key] ?? .object([:]) },
+            set: { self.configs[key] = $0 }
+        )
     }
 }
 
-/// 04 Recommended Setup
+/// 06 Recommended Setup, from `GET /children/{id}/recommendations`.
 struct RecommendedSetupView: View {
+    let childId: String
+    let profile: String
+
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
     @State private var viewModel = RecommendedSetupViewModel()
+
+    private var child: ChildSummary? { model.children.first { $0.id == childId } }
 
     var body: some View {
         @Bindable var viewModel = viewModel
 
         EGuardScreen {
-            if !model.isSetupComplete {
-                OnboardingProgressIndicator(step: .recommendedSetup)
-            }
+            OnboardingProgressIndicator(step: .recommendedSetup)
             ScreenHeader(
                 title: "Your recommended setup",
-                subtitle: subtitle
+                subtitle: child.map { "Based on \($0.name)'s age, here are the suggested settings." }
+                    ?? "Here are the suggested settings for the \(profile.capitalized) profile."
             )
 
-            EGuardCard {
-                ForEach(ProtectionFeature.recommendedSetupOrder) { feature in
-                    EGuardNavRow(
-                        title: rowTitle(for: feature),
-                        subtitle: viewModel.draft.summary(for: feature),
-                        symbolName: feature.symbolName,
-                        tint: EGuardTheme.tint(for: feature)
-                    ) {
-                        viewModel.editingFeature = feature
-                    }
-                    .accessibilityIdentifier("recommended.edit.\(feature.rawValue)")
-                    if feature != ProtectionFeature.recommendedSetupOrder.last {
-                        Divider()
+            switch viewModel.state {
+            case .loading:
+                LoadingCard()
+            case .failed(let message):
+                ErrorCard(message: message) { Task { await viewModel.load(childId: childId, profile: profile, api: model.api) } }
+            case .loaded(let recommendations):
+                let primary = recommendations.settings.filter { ProtectionKey.recommendedOrder.contains($0.key) }
+                    .sorted { ProtectionKey.recommendedOrder.firstIndex(of: $0.key)! < ProtectionKey.recommendedOrder.firstIndex(of: $1.key)! }
+                let more = recommendations.settings.filter { !ProtectionKey.recommendedOrder.contains($0.key) }
+
+                EGuardCard {
+                    ForEach(primary) { setting in
+                        row(setting)
+                        if setting.id != primary.last?.id { Divider() }
                     }
                 }
-            }
 
-            VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
-                SectionHeader(title: "More protections")
-                EGuardCard {
-                    ForEach(viewModel.moreProtections) { feature in
-                        Toggle(isOn: Binding(
-                            get: { viewModel.binding(for: feature) },
-                            set: { viewModel.setEnabled($0, for: feature) }
-                        )) {
-                            HStack(spacing: EGuardSpacing.sm) {
-                                IconTile(symbolName: feature.symbolName, tint: EGuardTheme.tint(for: feature))
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(feature.title)
-                                        .font(EGuardTypography.label)
-                                    Text(feature.shortDescription)
-                                        .font(EGuardTypography.caption)
-                                        .foregroundStyle(EGuardColors.textSecondary)
-                                }
-                            }
+                VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
+                    SectionHeader(title: "More protections")
+                    EGuardCard {
+                        ForEach(more) { setting in
+                            row(setting)
+                            if setting.id != more.last?.id { Divider() }
                         }
-                        .tint(EGuardColors.primary)
-                        .accessibilityIdentifier("recommended.toggle.\(feature.rawValue)")
-                        if feature != viewModel.moreProtections.last {
-                            Divider()
-                        }
+                    }
+                }
+
+                if recommendations.settings.allSatisfy({ $0.devices.isEmpty }) {
+                    EGuardCard {
+                        Label("No device is paired yet. eGuard saves these settings and applies them the moment you pair \(child?.name ?? "your child")'s device.", systemImage: "info.circle.fill")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
                     }
                 }
             }
         } actions: {
-            Button(model.isSetupComplete ? "Save & Configure" : "Review & Configure") {
-                viewModel.save(to: model)
-                router.push(model.isSetupComplete ? .manageProtection : .configureSettings)
+            Button("Review & Configure") {
+                router.push(.setupProgress(childId: childId, profile: profile, overrides: viewModel.overrides))
             }
             .buttonStyle(.eGuardPrimary)
+            .disabled(viewModel.state.value == nil)
             .accessibilityIdentifier("recommended.reviewSetup")
         }
         .brandNavigationTitle()
-        .onAppear { viewModel.load(from: model) }
-        .sheet(item: $viewModel.editingFeature) { feature in
-            FeatureEditorSheet(feature: feature, settings: $viewModel.draft)
+        .task { await viewModel.load(childId: childId, profile: profile, api: model.api) }
+        .sheet(item: $viewModel.editingKey) { key in
+            ProtectionConfigSheet(key: key, config: viewModel.binding(for: key))
                 .presentationDetents([.medium, .large])
         }
     }
 
-    private var subtitle: String {
-        if let child = model.childProfile {
-            return "Based on \(child.trimmedName)'s age, here are the suggested settings."
+    private func row(_ setting: RecommendedSetting) -> some View {
+        EGuardNavRow(
+            title: ProtectionKey.name(setting.key),
+            subtitle: viewModel.label(for: setting.key),
+            symbolName: LucideIcon.symbol(for: setting.icon, fallback: ProtectionKey.symbol(setting.key)),
+            tint: LucideIcon.tint(forKey: setting.key)
+        ) {
+            viewModel.editingKey = setting.key
+        } trailing: {
+            if setting.devices.contains(where: { $0.capability == .unsupported }) && setting.devices.allSatisfy({ $0.capability == .unsupported }) {
+                StatusPill(text: "Not supported", tint: EGuardColors.neutral)
+            } else if setting.devices.contains(where: { $0.capability == .guided || $0.capability == .verifyOnly }) {
+                StatusPill(text: "Guided", tint: EGuardColors.accent)
+            }
         }
-        return "Based on the \(viewModel.draft.profile.title) profile, here are the suggested settings."
-    }
-
-    /// Row titles follow the mockup's everyday wording.
-    private func rowTitle(for feature: ProtectionFeature) -> String {
-        switch feature {
-        case .downtime: "Bedtime"
-        case .gaming: "Gaming time"
-        case .socialApps: "Social apps time"
-        case .webContent: "Explicit content"
-        case .appInstallation: "App downloads"
-        default: feature.title
-        }
+        .accessibilityIdentifier("recommended.edit.\(setting.key.lowercased())")
     }
 }
 
-/// Native editors for each recommended value.
-struct FeatureEditorSheet: View {
-    let feature: ProtectionFeature
-    @Binding var settings: ProtectionSettings
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                switch feature {
-                case .downtime: downtimeEditor
-                case .gaming: allowanceEditor(
-                    title: "Gaming",
-                    value: $settings.gamingLimitMinutes
-                )
-                case .socialApps: allowanceEditor(
-                    title: "Social Apps",
-                    value: $settings.socialAppsLimitMinutes
-                )
-                case .webContent: webContentEditor
-                case .appInstallation: appInstallationEditor
-                default: Text(feature.shortDescription)
-                }
-            }
-            .navigationTitle(feature.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .accessibilityIdentifier("editor.done")
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var downtimeEditor: some View {
-        Section {
-            Toggle("Downtime", isOn: Binding(
-                get: { settings.downtime != nil },
-                set: { enabled in
-                    settings.downtime = enabled
-                        ? DowntimeWindow(start: TimeOfDay(hour: 21, minute: 30), end: TimeOfDay(hour: 6, minute: 0))
-                        : nil
-                }
-            ))
-        } footer: {
-            Text("Apps are shielded from the start time until the end time every day.")
-        }
-        if let window = settings.downtime {
-            Section("Schedule") {
-                DatePicker(
-                    "Start",
-                    selection: Binding(
-                        get: { window.start.date() },
-                        set: { settings.downtime?.start = TimeOfDay(date: $0) }
-                    ),
-                    displayedComponents: .hourAndMinute
-                )
-                DatePicker(
-                    "End",
-                    selection: Binding(
-                        get: { window.end.date() },
-                        set: { settings.downtime?.end = TimeOfDay(date: $0) }
-                    ),
-                    displayedComponents: .hourAndMinute
-                )
-                if !window.isValid {
-                    Label("The schedule must cover at least fifteen minutes.", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(EGuardColors.warning)
-                        .font(EGuardTypography.caption)
-                }
-            }
-        }
-    }
-
-    private func allowanceEditor(title: String, value: Binding<Int?>) -> some View {
-        Group {
-            Section {
-                Toggle("Daily limit", isOn: Binding(
-                    get: { value.wrappedValue != nil },
-                    set: { value.wrappedValue = $0 ? 60 : nil }
-                ))
-            } footer: {
-                Text("When the allowance runs out, the selected apps are shielded until tomorrow.")
-            }
-            if let minutes = value.wrappedValue {
-                Section("Allowance") {
-                    Picker("Per day", selection: Binding(
-                        get: { minutes },
-                        set: { value.wrappedValue = $0 }
-                    )) {
-                        ForEach(RecommendedSetupViewModel.allowanceOptions, id: \.self) { option in
-                            Text(ProtectionSettings.formatDailyAllowance(option)).tag(option)
-                        }
-                    }
-                    .pickerStyle(.inline)
-                    .labelsHidden()
-                }
-            }
-        }
-    }
-
-    private var webContentEditor: some View {
-        Section {
-            Picker("Web Content", selection: $settings.webContent) {
-                ForEach(WebContentLevel.allCases) { level in
-                    VStack(alignment: .leading) {
-                        Text(level.title)
-                        Text(level.detail).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .tag(level)
-                }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-        } footer: {
-            Text("Apple's filter blocks adult websites automatically. Specific sites can be added under App Restrictions.")
-        }
-    }
-
-    private var appInstallationEditor: some View {
-        Section {
-            Picker("App Installation", selection: $settings.appInstallation) {
-                ForEach(AppInstallationPolicy.allCases) { policy in
-                    VStack(alignment: .leading) {
-                        Text(policy.title)
-                        Text(policy.detail).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .tag(policy)
-                }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-        } footer: {
-            Text("Parent approval uses Apple's Ask to Buy, which is finished in Settings.")
-        }
-    }
+extension String: @retroactive Identifiable {
+    public var id: String { self }
 }
 
 #Preview {
     NavigationStack {
-        RecommendedSetupView()
+        RecommendedSetupView(childId: "child_1", profile: "PROTECTED")
     }
-    .environment({
-        let model = AppModel.mock()
-        model.chooseProfile(.balanced)
-        return model
-    }())
+    .environment(AppModel.preview())
     .environment(AppRouter())
 }

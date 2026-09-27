@@ -1,10 +1,22 @@
 import SwiftUI
 
-/// 09 Setup Complete
+/// 09 Setup Complete. Lists what the device verified, straight from the last batch or the health report.
 struct CompleteView: View {
+    let childId: String
+    let batchId: String?
+
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
     @State private var isCelebrating = false
+    @State private var state: LoadState<HealthReport> = .loading
+
+    private var child: ChildSummary? { model.children.first { $0.id == childId } }
+
+    /// True only when every evaluated protection is verified. The copy never overclaims.
+    private var isFullyProtected: Bool {
+        guard let report = state.value, report.total > 0 else { return false }
+        return report.fixCount == 0
+    }
 
     var body: some View {
         EGuardScreen {
@@ -38,29 +50,37 @@ struct CompleteView: View {
             }
             .frame(maxWidth: .infinity)
 
-            if let report = model.lastHealthReport, !report.checks.isEmpty {
+            switch state {
+            case .loading:
+                LoadingCard()
+            case .failed(let message):
+                ErrorCard(message: message) { Task { await loadReport() } }
+            case .loaded(let report):
                 EGuardCard {
                     ForEach(report.checks) { check in
-                        ChecklistRow(title: checklistTitle(for: check), status: check.status)
+                        ChecklistRow(title: title(for: check), status: check.status.healthStatus)
                     }
                 }
             }
 
             EGuardCard {
-                Label("eGuard re-checks your configuration every time you open it.", systemImage: "arrow.clockwise.circle.fill")
-                Label("Nothing on this device is monitored secretly.", systemImage: "eye.slash.fill")
+                Label("eGuard re-checks every protection each time a device syncs.", systemImage: "arrow.clockwise.circle.fill")
+                Label("Alerts tell you when something stops working.", systemImage: "bell.badge.fill")
             }
             .font(EGuardTypography.callout)
         } actions: {
             Button("Go to Dashboard") {
-                model.completeSetup()
-                router.popToRoot()
+                Task {
+                    await model.refreshDashboard()
+                    router.popToRoot()
+                }
             }
             .buttonStyle(.eGuardPrimary)
             .accessibilityIdentifier("complete.goToDashboard")
         }
         .brandNavigationTitle()
         .navigationBarBackButtonHidden()
+        .task { await loadReport() }
         .onAppear {
             withAnimation(.spring(duration: 0.8, bounce: 0.3)) {
                 isCelebrating = true
@@ -68,34 +88,37 @@ struct CompleteView: View {
         }
     }
 
-    /// True only when every evaluated protection is verified active. The copy never overclaims.
-    private var isFullyProtected: Bool {
-        guard let report = model.lastHealthReport, report.evaluatedCount > 0 else { return false }
-        return report.attentionChecks.isEmpty
+    private func loadReport() async {
+        state = .loading
+        state = await load { try await model.api.health(childId: childId) }
     }
 
     private var subtitle: String {
-        let device = model.childProfile?.deviceName ?? "your child's device"
+        let device = child?.deviceName ?? "your child's device"
+        guard let report = state.value else { return "Checking what the device verified…" }
+        if report.total == 0 || child?.deviceCount == 0 {
+            return "Your settings are saved. eGuard applies and verifies them as soon as \(child?.name ?? "your child")'s device is paired."
+        }
         if isFullyProtected {
             return "eGuard has successfully set up and verified the safety settings on \(device)."
         }
-        let count = model.lastHealthReport?.attentionChecks.count ?? 0
-        let noun = count == 1 ? "1 setting" : "\(count) settings"
-        return "\(device) is protected, but \(noun) still need attention. Finish them anytime from Manage Protection."
+        let noun = report.fixCount == 1 ? "1 setting" : "\(report.fixCount) settings"
+        return "\(device) is protected, but \(noun) still need attention. Finish them anytime from Protection & Controls."
     }
 
-    private func checklistTitle(for check: ConfigurationCheck) -> String {
+    private func title(for check: HealthCheck) -> String {
         switch check.status {
-        case .pass: "\(check.feature.title) configured"
-        case .unsupported: "\(check.feature.title) not supported here"
-        default: "\(check.feature.title) still needs attention"
+        case .pass: "\(check.name) verified"
+        case .unsupported: "\(check.name) not supported here"
+        case .notConfigured: child?.deviceCount == 0 ? "\(check.name) saved" : "\(check.name) not configured"
+        default: "\(check.name) needs attention"
         }
     }
 }
 
 #Preview {
     NavigationStack {
-        CompleteView()
+        CompleteView(childId: "child_1", batchId: nil)
     }
     .environment(AppModel.preview())
     .environment(AppRouter())

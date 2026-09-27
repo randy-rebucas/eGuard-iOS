@@ -22,13 +22,14 @@ struct MainTabView: View {
             Tab(MainTab.alerts.title, systemImage: MainTab.alerts.symbolName, value: .alerts) {
                 AlertsView(isRoot: true)
             }
-            .badge(model.unreadAlertCount)
+            .badge(model.unreadAlerts)
             Tab(MainTab.settings.title, systemImage: MainTab.settings.symbolName, value: .settings) {
                 SettingsView(isRoot: true)
             }
         }
         .tint(EGuardColors.primary)
         .toolbar(.hidden, for: .navigationBar)
+        .task { await model.refreshUnreadCount() }
     }
 }
 

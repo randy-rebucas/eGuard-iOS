@@ -124,10 +124,10 @@ struct ConfigurationIntegrationTests {
         #expect(report.summary == "All protections are active.")
 
         model.completeSetup()
-        #expect(model.isSetupComplete)
+        #expect(model.progress.isSetupComplete)
 
         model.resetEverything()
-        #expect(!model.isSetupComplete)
+        #expect(!model.progress.isSetupComplete)
         #expect(model.childProfile == nil)
         #expect(model.restrictions.snapshot() == .empty)
         #expect(model.schedules.snapshot() == .empty)

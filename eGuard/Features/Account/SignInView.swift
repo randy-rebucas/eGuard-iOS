@@ -1,13 +1,16 @@
 import AuthenticationServices
 import SwiftUI
 
-/// Signs into the account stored on this device.
+/// Signs into an existing eGuard account.
 struct SignInView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
     @State private var email = ""
     @State private var password = ""
     @State private var errorMessage: String?
+    @State private var isSubmitting = false
+
+    private var showsApple: Bool { model.appInfo?.signIn.apple ?? true }
 
     var body: some View {
         EGuardScreen(showsActionBackground: false) {
@@ -39,33 +42,23 @@ struct SignInView: View {
                 )
             }
 
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.circle.fill")
-                    .font(EGuardTypography.caption)
-                    .foregroundStyle(EGuardColors.danger)
-                    .accessibilityIdentifier("signIn.error")
-            }
+            InlineError(message: errorMessage)
 
-            Button("Sign in") { signIn() }
+            Button(isSubmitting ? "Signing in…" : "Sign in") { Task { await signIn() } }
                 .buttonStyle(.eGuardPrimary)
-                .disabled(email.isEmpty || password.isEmpty)
+                .disabled(email.isEmpty || password.isEmpty || isSubmitting)
                 .accessibilityIdentifier("signIn.submit")
 
-            SignInWithAppleButton(.signIn) { request in
-                request.requestedScopes = [.fullName, .email]
-            } onCompletion: { result in
-                if case .success(let authorization) = result,
-                   let credential = authorization.credential as? ASAuthorizationAppleIDCredential {
-                    let formatter = PersonNameComponentsFormatter()
-                    model.signIn(provider: .apple, fullName: credential.fullName.map { formatter.string(from: $0) }, email: credential.email)
-                    finish()
-                } else if case .failure(let error) = result, (error as? ASAuthorizationError)?.code != .canceled {
-                    errorMessage = AccountError.providerUnavailable(.apple).localizedDescription
+            if showsApple {
+                SignInWithAppleButton(.signIn) { request in
+                    request.requestedScopes = [.fullName, .email]
+                } onCompletion: { result in
+                    Task { await handleApple(result) }
                 }
+                .signInWithAppleButtonStyle(.black)
+                .frame(height: 50)
+                .clipShape(EGuardShapes.button)
             }
-            .signInWithAppleButtonStyle(.black)
-            .frame(height: 50)
-            .clipShape(EGuardShapes.button)
         } actions: {
             HStack(spacing: EGuardSpacing.xxs) {
                 Text("New to eGuard?")
@@ -81,20 +74,44 @@ struct SignInView: View {
         .brandNavigationTitle()
     }
 
-    private func signIn() {
+    private func signIn() async {
+        isSubmitting = true
+        defer { isSubmitting = false }
         do {
-            try model.signIn(email: email, password: password)
+            try await model.signIn(email: email, password: password)
             finish()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
+    private func handleApple(_ result: Result<ASAuthorization, Error>) async {
+        guard case .success(let authorization) = result else {
+            if case .failure(let error) = result, (error as? ASAuthorizationError)?.code != .canceled {
+                errorMessage = AccountError.providerUnavailable(.apple).localizedDescription
+            }
+            return
+        }
+        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+              let data = credential.identityToken, let token = String(data: data, encoding: .utf8) else {
+            errorMessage = AccountError.providerUnavailable(.apple).localizedDescription
+            return
+        }
+        let formatter = PersonNameComponentsFormatter()
+        do {
+            try await model.signInWithApple(identityToken: token, fullName: credential.fullName.map { formatter.string(from: $0) })
+            finish()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Existing families land on the dashboard; a family with no children continues to Add Child.
     private func finish() {
-        if model.isSetupComplete {
+        if model.hasChildren {
             router.popToRoot()
         } else {
-            router.push(.childDevice)
+            router.push(.addChild)
         }
     }
 }

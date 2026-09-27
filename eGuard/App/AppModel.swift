@@ -3,11 +3,21 @@ import OSLog
 import Observation
 
 /// The composition root and shared application state.
-/// Views read state from here; view models call its methods to change it.
+/// The parent's family lives on the eGuard server; this model owns the session and the
+/// data every tab shares. The local Screen Time services remain for the device-side role.
 @Observable
 final class AppModel {
+    enum BootstrapState: Equatable {
+        case idle
+        case loading
+        case ready
+        case updateRequired(minimum: String)
+    }
+
     // MARK: Dependencies
 
+    let api: EGuardAPIService
+    let sessionStore: SessionStore
     let authorization: ParentalControlAuthorizationService
     let restrictions: RestrictionService
     let schedules: ActivityScheduleService
@@ -20,9 +30,21 @@ final class AppModel {
     let runHealthCheck: RunHealthCheckUseCase
     private let network: NetworkMonitor?
 
-    // MARK: State
+    // MARK: Server state
 
-    private(set) var account: UserAccount?
+    private(set) var user: APIUser?
+    private(set) var appInfo: AppInfo?
+    private(set) var dashboard: Dashboard?
+    private(set) var unreadAlerts = 0
+    private(set) var bootstrapState: BootstrapState = .idle
+    private(set) var pushToken: String?
+    /// The most recent server error while refreshing shared data, for a banner.
+    private(set) var refreshError: String?
+    /// Child photos by versioned URL.
+    var photoCache: [String: Data] = [:]
+
+    // MARK: Local state (device-side role and offline cache)
+
     private(set) var childProfile: ChildProfile?
     private(set) var settings: ProtectionSettings
     private(set) var selections: ProtectionSelections
@@ -37,13 +59,18 @@ final class AppModel {
     let skipsSplash: Bool
 
     var isOnline: Bool { network?.isOnline ?? true }
-    var isSetupComplete: Bool { progress.isSetupComplete }
-    var isSignedIn: Bool { account != nil }
-    var unreadAlertCount: Int { alerts.filter { !$0.isRead }.count }
+    var isSignedIn: Bool { sessionStore.session != nil }
+    var children: [ChildSummary] { dashboard?.children ?? [] }
+    var hasChildren: Bool { !children.isEmpty }
+    /// The main tabs show once the parent is signed in and has added a child.
+    var isSetupComplete: Bool { isSignedIn && hasChildren }
+    var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0" }
 
     // MARK: Init
 
     init(
+        api: EGuardAPIService,
+        sessionStore: SessionStore,
         authorization: ParentalControlAuthorizationService,
         restrictions: RestrictionService,
         schedules: ActivityScheduleService,
@@ -53,6 +80,8 @@ final class AppModel {
         network: NetworkMonitor? = nil,
         skipsSplash: Bool = false
     ) {
+        self.api = api
+        self.sessionStore = sessionStore
         self.authorization = authorization
         self.restrictions = restrictions
         self.schedules = schedules
@@ -75,7 +104,6 @@ final class AppModel {
             capabilities: capabilityResolver
         )
 
-        account = try? repository.loadAccount()
         childProfile = try? repository.loadChildProfile()
         settings = (try? repository.loadSettings()) ?? .off
         selections = (try? repository.loadSelections()) ?? ProtectionSelections()
@@ -91,14 +119,14 @@ final class AppModel {
     /// Builds the model for the current process. UI tests and previews get mocks.
     static func make(arguments: [String] = ProcessInfo.processInfo.arguments) -> AppModel {
         if arguments.contains("-uiTesting") {
+            let seeded = arguments.contains("-setupComplete")
             let model = mock(
-                authorizationStatus: arguments.contains("-setupComplete") ? .approved : .notDetermined,
+                api: seeded ? .seeded() : .empty(),
+                signedIn: seeded,
+                authorizationStatus: seeded ? .approved : .notDetermined,
                 authorizationBehavior: arguments.contains("-denyAuthorization") ? .deny : .approve,
                 skipsSplash: true
             )
-            if arguments.contains("-setupComplete") {
-                model.seedCompletedSetup()
-            }
             return model
         }
         return live()
@@ -114,7 +142,11 @@ final class AppModel {
             isFamilyControlsAvailable: !ProcessInfo.processInfo.isiOSAppOnMac,
             isSimulator: isSimulator
         )
-        return AppModel(
+        let sessionStore = SessionStore.live()
+        let client = APIClient(sessionStore: sessionStore)
+        let model = AppModel(
+            api: LiveEGuardAPI(client: client),
+            sessionStore: sessionStore,
             authorization: FamilyControlsAuthorizationService(),
             restrictions: ManagedSettingsRestrictionService(),
             schedules: DeviceActivityScheduleService(),
@@ -123,15 +155,26 @@ final class AppModel {
             environment: environment,
             network: NetworkMonitor()
         )
+        client.onUnauthorized = { [weak model] in model?.handleUnauthorized() }
+        return model
     }
 
     static func mock(
+        api mockAPI: MockEGuardAPI? = nil,
+        signedIn: Bool = false,
         authorizationStatus: ParentalControlAuthorizationStatus = .notDetermined,
         authorizationBehavior: MockAuthorizationService.Behavior = .approve,
         environment: PlatformEnvironment = .iPhone,
         skipsSplash: Bool = true
     ) -> AppModel {
-        AppModel(
+        let api = mockAPI ?? .empty()
+        let sessionStore = SessionStore.inMemory()
+        if signedIn {
+            sessionStore.save(MockEGuardAPI.seededSession)
+        }
+        let model = AppModel(
+            api: api,
+            sessionStore: sessionStore,
             authorization: MockAuthorizationService(status: authorizationStatus, behavior: authorizationBehavior),
             restrictions: MockRestrictionService(),
             schedules: MockActivityScheduleService(),
@@ -140,60 +183,125 @@ final class AppModel {
             environment: environment,
             skipsSplash: skipsSplash
         )
+        if signedIn {
+            model.user = api.currentUser
+        }
+        return model
     }
 
-    /// A signed-in, fully configured model for previews of the main app.
+    /// A signed-in parent with a seeded family, for previews of the main app.
     static func preview() -> AppModel {
         let model = make(arguments: ["-uiTesting", "-setupComplete"])
+        // Previews render synchronously, so fetch the dashboard eagerly.
+        Task { await model.bootstrap() }
         return model
+    }
+
+    // MARK: Launch
+
+    /// Runs the launch flow: app-info gate, then the dashboard when a session exists.
+    func bootstrap() async {
+        guard bootstrapState != .loading else { return }
+        bootstrapState = .loading
+        if let info = try? await api.appInfo() {
+            appInfo = info
+            if info.requiresUpdate(currentVersion: currentVersion) {
+                bootstrapState = .updateRequired(minimum: info.minimumAppVersion)
+                return
+            }
+        }
+        if isSignedIn {
+            await refreshDashboard()
+        }
+        bootstrapState = .ready
+    }
+
+    /// Reloads the Home tab data and the unread badge. A 401 signs the parent out.
+    func refreshDashboard() async {
+        do {
+            let dashboard = try await api.dashboard()
+            self.dashboard = dashboard
+            user = dashboard.user
+            unreadAlerts = dashboard.unreadAlerts
+            refreshError = nil
+        } catch let error as APIError where error.isUnauthorized {
+            handleUnauthorized()
+        } catch {
+            refreshError = error.localizedDescription
+        }
+    }
+
+    func refreshUnreadCount() async {
+        if let count = try? await api.unreadCount() {
+            unreadAlerts = count
+        }
+    }
+
+    func setUnreadAlerts(_ count: Int) {
+        unreadAlerts = count
+    }
+
+    func refreshUser() async {
+        if let user = try? await api.me() {
+            self.user = user
+        }
     }
 
     // MARK: Account
 
-    func createAccount(_ newAccount: UserAccount) {
-        account = newAccount
-        persist { try repository.saveAccount(newAccount) }
+    func register(name: String, email: String, password: String) async throws {
+        let response = try await api.register(name: name, email: email, password: password, familyName: nil)
+        await startSession(response)
     }
 
-    /// Signs in against the account stored on this device.
-    func signIn(email: String, password: String) throws {
-        guard let stored = try? repository.loadAccount() else { throw AccountError.noAccount }
-        guard stored.normalizedEmail == email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
-            throw AccountError.emailMismatch
+    func signIn(email: String, password: String) async throws {
+        let response = try await api.login(email: email, password: password)
+        await startSession(response)
+    }
+
+    /// Continue with Apple. Retries with the guardian confirmation when the server asks for it.
+    @discardableResult
+    func signInWithApple(identityToken: String, fullName: String?) async throws -> Bool {
+        let response: AuthResponse
+        do {
+            response = try await api.social(provider: .apple, idToken: identityToken, name: fullName, guardian: false)
+        } catch let error as APIError where error.code == "guardian_required" {
+            response = try await api.social(provider: .apple, idToken: identityToken, name: fullName, guardian: true)
         }
-        if stored.provider == .email {
-            guard stored.verify(password: password) else { throw AccountError.wrongPassword }
+        await startSession(response)
+        return response.isNew ?? false
+    }
+
+    private func startSession(_ response: AuthResponse) async {
+        sessionStore.save(response.session)
+        user = response.user
+        await refreshDashboard()
+        if let pushToken {
+            try? await api.registerPushToken(pushToken)
         }
-        account = stored
     }
 
-    /// Signs in with a third-party identity. Reuses the stored account when the email matches.
-    func signIn(provider: AccountProvider, fullName: String?, email: String?) {
-        if let stored = try? repository.loadAccount(),
-           stored.provider == provider || stored.normalizedEmail == email?.lowercased() {
-            account = stored
-            return
-        }
-        let name = fullName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedName = (name?.isEmpty == false ? name : nil) ?? "Parent"
-        let resolvedEmail = email ?? "Hidden by \(provider.title)"
-        createAccount(UserAccount(fullName: resolvedName, email: resolvedEmail, provider: provider))
+    /// Ends this session on the server and forgets it locally.
+    func signOut() async {
+        try? await api.logout(pushToken: pushToken)
+        handleUnauthorized()
     }
 
-    func updateAccount(fullName: String, email: String) {
-        guard var current = account else { return }
-        current.fullName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
-        current.email = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        account = current
-        persist { try repository.saveAccount(current) }
+    /// Clears the session without a server call, e.g. after a 401.
+    func handleUnauthorized() {
+        sessionStore.clear()
+        user = nil
+        dashboard = nil
+        unreadAlerts = 0
     }
 
-    /// Signs out but keeps the child's protections and profile on the device.
-    func signOut() {
-        account = nil
+    func updatePushToken(_ token: String) {
+        pushToken = token
+        guard isSignedIn else { return }
+        Task { try? await api.registerPushToken(token) }
     }
 
-    // MARK: Child
+    // MARK: Child (local cache for the device-side role)
 
     func saveChildProfile(_ profile: ChildProfile) {
         childProfile = profile
@@ -201,7 +309,7 @@ final class AppModel {
         persist { try repository.saveChildProfile(profile) }
     }
 
-    // MARK: Settings
+    // MARK: Local settings
 
     func chooseProfile(_ profile: ProtectionProfile) {
         let age = childProfile?.age ?? 12
@@ -232,7 +340,7 @@ final class AppModel {
         capabilityResolver.capability(for: feature, settings: settings)
     }
 
-    // MARK: Configuration
+    // MARK: Local configuration
 
     /// Applies an automatic feature and records the true outcome.
     @discardableResult
@@ -260,7 +368,7 @@ final class AppModel {
         persist { try repository.saveProgress(progress) }
     }
 
-    // MARK: Health
+    // MARK: Local health
 
     @discardableResult
     func performHealthCheck() -> ConfigurationHealthReport {
@@ -268,7 +376,7 @@ final class AppModel {
         lastHealthReport = report
         authorizationStatus = authorization.authorizationStatus
         persist { try repository.saveHealthReport(report) }
-        if isSetupComplete {
+        if progress.isSetupComplete {
             recordAlerts(from: report)
         }
         return report
@@ -286,10 +394,9 @@ final class AppModel {
         ))
     }
 
-    /// Removes every protection and forgets all local data, including the account.
+    /// Removes every local protection, forgets all local data, and ends the server session.
     func resetEverything() {
         applyProtection.removeAllProtections()
-        account = nil
         childProfile = nil
         settings = .off
         selections = ProtectionSelections()
@@ -298,9 +405,10 @@ final class AppModel {
         alerts = []
         preferences = AppPreferences()
         persist { try repository.eraseAll() }
+        Task { await signOut() }
     }
 
-    // MARK: Alerts
+    // MARK: Local alerts
 
     func addAlert(_ alert: ProtectionAlert) {
         alerts = AlertGenerator.merge([alert], into: alerts)
@@ -330,6 +438,8 @@ final class AppModel {
         persist { try repository.saveAlerts(alerts) }
     }
 
+    var unreadAlertCount: Int { unreadAlerts }
+
     // MARK: Preferences
 
     func updatePreferences(_ change: (inout AppPreferences) -> Void) {
@@ -355,7 +465,7 @@ final class AppModel {
         updatePreferences { $0.recordVisit(visit) }
     }
 
-    // MARK: Authorization
+    // MARK: Authorization (device-side role)
 
     func refreshAuthorization() {
         authorization.refreshAuthorizationStatus()
@@ -380,27 +490,5 @@ final class AppModel {
             persistenceError = "eGuard couldn't save your changes on this device."
             EGuardLog.app.error("Persistence failed.")
         }
-    }
-
-    /// Seeds a signed-in parent with a finished Balanced setup so UI tests and previews open the dashboard directly.
-    private func seedCompletedSetup() {
-        createAccount(UserAccount(fullName: "Randy Cruz", email: "randy@example.com"))
-        saveChildProfile(ChildProfile(name: "Mia", age: 12, device: .iPhone, relationship: .childInFamilySharing))
-        chooseProfile(.balanced)
-        for feature in settings.enabledFeatures {
-            switch capability(for: feature).mode {
-            case .automatic: configure(feature)
-            case .guided: confirmGuidedStep(feature)
-            default: break
-            }
-        }
-        completeSetup()
-        performHealthCheck()
-        addAlert(ProtectionAlert(
-            category: .apps,
-            title: "New app installed",
-            detail: "Ask to Buy request on \(childProfile?.deviceName ?? "the device")",
-            date: Date.now.addingTimeInterval(-3 * 3600)
-        ))
     }
 }
