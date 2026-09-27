@@ -1,32 +1,17 @@
 import SwiftUI
 
-/// The eGuard mark: a blue shield with a faceted hexagon inside.
+/// The eGuard mark: the brand's shield-and-cube artwork from the asset catalog.
+/// `tint` is kept for call-site compatibility; the artwork carries its own colors.
 struct EGuardLogoMark: View {
     var size: CGFloat = 64
     var tint: Color = EGuardColors.primary
 
     var body: some View {
-        ZStack {
-            Image(systemName: "shield.fill")
-                .font(.system(size: size, weight: .regular))
-                .foregroundStyle(tint)
-            Image(systemName: "shield.fill")
-                .font(.system(size: size * 0.78, weight: .regular))
-                .foregroundStyle(.white)
-                .offset(y: -size * 0.01)
-            Image(systemName: "hexagon.fill")
-                .font(.system(size: size * 0.38, weight: .regular))
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [Color(hex: 0x6FA3FF), tint],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .offset(y: -size * 0.03)
-        }
-        .frame(width: size, height: size * 1.1)
-        .accessibilityHidden(true)
+        Image("LogoMark")
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 

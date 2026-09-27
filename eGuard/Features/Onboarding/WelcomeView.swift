@@ -23,7 +23,19 @@ struct WelcomeView: View {
                     .foregroundStyle(EGuardColors.textSecondary)
             }
 
-            FamilyIllustration(height: 260)
+            // The photo sits in an overlay so its aspect ratio can't widen the layout.
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: 260)
+                .overlay {
+                    Image("HeroFamily")
+                        .resizable()
+                        .scaledToFill()
+                        .accessibilityHidden(true)
+                }
+                .clipShape(EGuardShapes.card)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("A parent and two children looking at a tablet together")
 
             if let user = model.user {
                 EGuardCard {
