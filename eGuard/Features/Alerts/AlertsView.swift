@@ -116,7 +116,7 @@ struct AlertsView: View {
             }
             HStack(spacing: EGuardSpacing.sm) {
                 if let action = alert.action, !alert.resolved {
-                    Button(action.label) { open(alert) }
+                    Button(action.displayLabel) { open(alert) }
                         .font(EGuardTypography.label)
                         .foregroundStyle(EGuardColors.primary)
                 }

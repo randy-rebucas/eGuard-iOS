@@ -33,10 +33,9 @@ struct SubscriptionView: View {
     }
 
     private func planCard(_ info: SubscriptionInfo) -> some View {
-        // Only features the plan includes are listed; there is no in-app upgrade path to point at.
-        let included = info.features.filter(\.included)
-
-        return EGuardCard {
+        // Every feature is listed. Ones outside the plan are marked neutrally: no prices, no upgrade
+        // call to action, and no link to a web checkout, which the App Store does not allow here.
+        EGuardCard {
             HStack(spacing: EGuardSpacing.md) {
                 IconTile(symbolName: "rosette", tint: EGuardColors.tileYellow, size: 56)
                 VStack(alignment: .leading, spacing: 2) {
@@ -49,15 +48,22 @@ struct SubscriptionView: View {
             }
             .accessibilityElement(children: .combine)
 
-            if !included.isEmpty {
+            if !info.features.isEmpty {
                 VStack(alignment: .leading, spacing: EGuardSpacing.xs) {
-                    ForEach(included) { feature in
-                        HStack(spacing: EGuardSpacing.sm) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(EGuardColors.success)
-                            Text(feature.label)
-                                .font(EGuardTypography.label)
-                                .foregroundStyle(EGuardColors.textPrimary)
+                    ForEach(info.features) { feature in
+                        HStack(alignment: .firstTextBaseline, spacing: EGuardSpacing.sm) {
+                            Image(systemName: feature.included ? "checkmark.circle.fill" : "minus.circle.fill")
+                                .foregroundStyle(feature.included ? EGuardColors.success : EGuardColors.neutral)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(feature.label)
+                                    .font(EGuardTypography.label)
+                                    .foregroundStyle(feature.included ? EGuardColors.textPrimary : EGuardColors.textSecondary)
+                                if !feature.included {
+                                    Text("Not included in your plan")
+                                        .font(EGuardTypography.caption)
+                                        .foregroundStyle(EGuardColors.textSecondary)
+                                }
+                            }
                             Spacer(minLength: 0)
                         }
                         .accessibilityElement(children: .combine)

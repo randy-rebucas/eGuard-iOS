@@ -3,6 +3,7 @@ import SwiftUI
 /// Family privacy settings from `/family/privacy` (admin only), plus what eGuard stores.
 struct PrivacyView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
     @State private var state: LoadState<PrivacySettings> = .loading
     @State private var isConfirmingHistoryOff = false
     @State private var errorMessage: String?
@@ -73,6 +74,20 @@ struct PrivacyView: View {
                 point("Location only while a device shares it, and history only when turned on above.", symbol: "location.fill", tint: EGuardColors.success)
                 Divider()
                 point("Never messages, recordings, or passwords from your child's device.", symbol: "eye.slash.fill", tint: EGuardColors.danger)
+            }
+
+            EGuardCard {
+                SectionHeader(title: "Privacy questions")
+                Text("Ask about your family's data, or request a copy or deletion, by emailing \(EGuardPublisher.name).")
+                    .font(EGuardTypography.callout)
+                    .foregroundStyle(EGuardColors.textSecondary)
+                EGuardNavRow(title: "Privacy Policy", subtitle: "What eGuard collects, why, and for how long", symbolName: "doc.text.fill", tint: EGuardColors.primary) {
+                    openURL(EGuardPublisher.privacyPolicyURL)
+                }
+                Divider()
+                EGuardNavRow(title: "Email privacy contact", subtitle: model.supportEmail, symbolName: "envelope.fill", tint: EGuardColors.tileTeal) {
+                    if let url = EGuardPublisher.mailURL(for: model.supportEmail) { openURL(url) }
+                }
             }
         } actions: {
             EmptyView()

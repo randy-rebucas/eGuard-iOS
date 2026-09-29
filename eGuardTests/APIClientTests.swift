@@ -81,6 +81,21 @@ struct APIClientTests {
         #expect(store.session == nil)
     }
 
+    @Test func planLimitMessagesNeverInviteAnUpgrade() async {
+        let (client, _) = makeClient()
+        StubURLProtocol.handler = { _ in (409, Data(#"{"error":"Free covers 1 child. Upgrade to eGuard Plus to add up to 5.","code":"plan_limit"}"#.utf8)) }
+        do {
+            _ = try await client.send(.json(.post, "children", body: ["name": "Mia"]), as: ChildSummary.self)
+            Issue.record("Expected a 409")
+        } catch let error as APIError {
+            #expect(error.status == 409)
+            #expect(error.localizedDescription == APIClient.planLimitMessage)
+        } catch {
+            Issue.record("Unexpected error \(error)")
+        }
+        #expect(APIClient.storeSafeMessage("That email is already in use.", status: 409) == "That email is already in use.")
+    }
+
     @Test func missingTokenFailsBeforeTheNetwork() async {
         let (client, _) = makeClient(signedIn: false)
         await #expect(throws: APIError.notSignedIn) {

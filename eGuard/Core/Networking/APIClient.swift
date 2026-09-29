@@ -137,7 +137,7 @@ final class APIClient {
             let error = APIError.server(
                 status: http.statusCode,
                 code: body?.code ?? Self.defaultCode(for: http.statusCode),
-                message: body?.error ?? Self.defaultMessage(for: http.statusCode)
+                message: Self.storeSafeMessage(body?.error ?? Self.defaultMessage(for: http.statusCode), status: http.statusCode)
             )
             if error.isUnauthorized, request.requiresAuth {
                 EGuardLog.app.error("401 on \(request.method.rawValue) \(request.path): \(body?.code ?? "-") \(body?.error ?? "-")")
@@ -149,6 +149,19 @@ final class APIClient {
     }
 
     // MARK: Helpers
+
+    /// Shown when a plan limit is hit. Neutral on purpose: no prices, no upgrade wording, no checkout link.
+    static let planLimitMessage = "Your plan's limit has been reached. Contact support if you need to change your plan."
+
+    /// Replaces plan-limit messages that invite an upgrade. The server should already omit that wording
+    /// for the iOS client; this is the safety net so a stray message can't get the app rejected.
+    static func storeSafeMessage(_ message: String, status: Int) -> String {
+        guard status == 409 || status == 402 else { return message }
+        let lowered = message.lowercased()
+        let sellsSomething = lowered.contains("upgrade") || lowered.contains("subscribe") || lowered.contains("₱")
+            || lowered.contains("per month") || lowered.contains("/month") || lowered.contains("eguard plus") || lowered.contains("eguard family")
+        return sellsSomething ? planLimitMessage : message
+    }
 
     private static func networkMessage(for error: Error) -> String {
         let urlError = error as? URLError

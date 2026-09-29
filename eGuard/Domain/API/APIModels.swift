@@ -933,6 +933,12 @@ nonisolated struct AlertAction: Codable, Equatable, Sendable {
     var childId: String?
     var key: String?
     var deviceId: String?
+
+    /// The button text to show. Plan actions get a neutral label on iOS, where the app must not
+    /// invite the parent to buy or upgrade outside In-App Purchase.
+    var displayLabel: String {
+        type == "MANAGE_SUBSCRIPTION" ? "View your plan" : label
+    }
 }
 
 nonisolated struct APIAlert: Codable, Equatable, Identifiable, Sendable {

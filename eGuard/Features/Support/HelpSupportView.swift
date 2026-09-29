@@ -44,11 +44,18 @@ struct HelpSupportView: View {
                             }
                             if item.id != index.categories.last?.id { Divider() }
                         }
-                        if let contact = index.contact {
-                            Divider()
-                            EGuardNavRow(title: "Contact Support", subtitle: contact.replyTime ?? contact.email, symbolName: "bubble.left.and.bubble.right.fill", tint: EGuardColors.tileTeal) {
-                                router.push(.supportTicket)
-                            }
+                        Divider()
+                        EGuardNavRow(title: "Contact Support", subtitle: index.contact?.replyTime ?? "Replies within 1 business day", symbolName: "bubble.left.and.bubble.right.fill", tint: EGuardColors.tileTeal) {
+                            router.push(.supportTicket)
+                        }
+                        Divider()
+                        // Prefer the email the help index names, then /app-info, then the publisher default.
+                        EGuardNavRow(title: "Email us", subtitle: supportEmail(index), symbolName: "envelope.fill", tint: EGuardColors.primary) {
+                            if let url = EGuardPublisher.mailURL(for: supportEmail(index)) { openURL(url) }
+                        }
+                        Divider()
+                        EGuardNavRow(title: "Privacy Policy", subtitle: "What eGuard collects and how long it's kept", symbolName: "doc.text.fill", tint: EGuardColors.tilePurple) {
+                            openURL(EGuardPublisher.privacyPolicyURL)
                         }
                     }
                 }
@@ -88,6 +95,11 @@ struct HelpSupportView: View {
     private func loadHelp() async {
         if state.value == nil { state = .loading }
         state = await load { try await model.api.help(query: query, category: category) }
+    }
+
+    private func supportEmail(_ index: HelpIndex) -> String {
+        let fromHelp = index.contact?.email.trimmingCharacters(in: .whitespaces) ?? ""
+        return fromHelp.isEmpty ? model.supportEmail : fromHelp
     }
 
     private func tint(_ category: String) -> Color {

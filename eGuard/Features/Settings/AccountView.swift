@@ -4,6 +4,7 @@ import SwiftUI
 struct AccountView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
+    @Environment(\.openURL) private var openURL
     @State private var name = ""
     @State private var email = ""
     @State private var hasLoaded = false
@@ -56,6 +57,20 @@ struct AccountView: View {
                     EGuardValueRow(label: "Time zone", value: user.family.timezone)
                     Divider()
                     EGuardValueRow(label: "Member since", value: user.createdAt.formatted(date: .abbreviated, time: .omitted))
+                }
+
+                // Deletion runs on the web (Settings › Data), shared with Android. Linking it here keeps
+                // the process reachable from inside the app, as the App Store requires.
+                EGuardCard {
+                    EGuardNavRow(
+                        title: "Delete account",
+                        subtitle: user.isAdmin ? "Deletes your whole family's data. Opens eguard.family." : "Deletes only your account. Opens eguard.family.",
+                        symbolName: "trash.fill",
+                        tint: EGuardColors.danger
+                    ) {
+                        openURL(EGuardPublisher.deleteAccountURL)
+                    }
+                    .accessibilityIdentifier("account.delete")
                 }
             } else {
                 EmptyStateView(symbolName: "person.crop.circle.badge.questionmark", title: "Not signed in", message: "Sign in to manage your profile.")

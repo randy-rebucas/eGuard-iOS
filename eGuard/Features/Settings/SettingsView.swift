@@ -97,7 +97,7 @@ struct SettingsView: View {
                 router.push(.account)
             }
             Divider()
-            EGuardNavRow(title: "Your plan", subtitle: "See what your plan includes", symbolName: "rosette", tint: EGuardColors.tileYellow) {
+            EGuardNavRow(title: "Your plan", subtitle: "View your plan and usage", symbolName: "rosette", tint: EGuardColors.tileYellow) {
                 router.push(.subscription)
             }
             Divider()

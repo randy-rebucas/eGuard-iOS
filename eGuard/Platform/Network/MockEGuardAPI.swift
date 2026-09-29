@@ -33,7 +33,7 @@ final class MockEGuardAPI: EGuardAPIService {
         apiVersion: "1",
         minimumAppVersion: "1.0.0",
         signIn: AppInfo.SignInOptions(password: true, apple: true, google: false),
-        supportEmail: "support@eguard.example"
+        supportEmail: "support@devcomdigital.com"
     )
     /// Thrown by the next call, then cleared. Lets tests exercise error paths.
     var nextError: APIError?
@@ -336,7 +336,7 @@ final class MockEGuardAPI: EGuardAPIService {
                 HelpCategory(id: "FAQ", name: "FAQs", description: "Frequently asked questions", icon: "help-circle"),
             ],
             articles: filtered.map { HelpArticleSummary(slug: $0.slug, category: $0.category, title: $0.title, summary: $0.summary) },
-            contact: HelpContact(email: "support@eguard.example", replyTime: "Replies within 1 business day")
+            contact: HelpContact(email: "support@devcomdigital.com", replyTime: "Replies within 1 business day")
         )
     }
 
@@ -1203,7 +1203,8 @@ final class MockEGuardAPI: EGuardAPIService {
             ],
             usage: PlanUsage(devicesUsed: devicesByChild.values.reduce(0) { $0 + $1.count }, deviceLimit: 8, children: summaries.count),
             canManage: currentUser?.isAdmin ?? false, billingAvailable: false, store: nil,
-            upgrade: UpgradeInfo(planId: "FAMILY", name: "eGuard Family", googlePlayProductId: "eguard_family")
+            // The iOS client never shows an upgrade path, so the mock omits it like the server does for X-eGuard-Client: ios.
+            upgrade: nil
         )
     }
 

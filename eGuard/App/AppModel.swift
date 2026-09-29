@@ -67,6 +67,11 @@ final class AppModel {
     /// The main tabs show once the parent is signed in and has added a child.
     var isSetupComplete: Bool { isSignedIn && hasChildren }
     var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0" }
+    /// Support and privacy contact: the server's `/app-info` value when available, else the publisher default.
+    var supportEmail: String {
+        let fromServer = appInfo?.supportEmail?.trimmingCharacters(in: .whitespaces) ?? ""
+        return fromServer.isEmpty ? EGuardPublisher.supportEmail : fromServer
+    }
 
     // MARK: Init
 
