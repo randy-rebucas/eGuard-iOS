@@ -44,15 +44,15 @@ nonisolated struct APIRequest: Sendable {
 
 /// Sends requests to the eGuard API with the bearer token, client headers, and shared error handling.
 final class APIClient {
-    static let defaultBaseURL = URL(string: "https://e-guard-web.vercel.app/api/mobile/v1")!
+    static let defaultBaseURL = URL(string: "https://www.eguard.family/api/mobile/v1")!
 
     let baseURL: URL
     private let sessionStore: SessionStore
     private let urlSession: URLSession
     private let decoder: JSONDecoder
 
-    /// Called on any 401 so the app can sign out locally.
-    var onUnauthorized: (() -> Void)?
+    /// Called on any 401 with the server's error so the app can sign out locally and explain why.
+    var onUnauthorized: ((APIError) -> Void)?
 
     init(baseURL: URL = APIClient.defaultBaseURL, sessionStore: SessionStore, urlSession: URLSession = .shared) {
         self.baseURL = baseURL
@@ -140,7 +140,8 @@ final class APIClient {
                 message: body?.error ?? Self.defaultMessage(for: http.statusCode)
             )
             if error.isUnauthorized, request.requiresAuth {
-                onUnauthorized?()
+                EGuardLog.app.error("401 on \(request.method.rawValue) \(request.path): \(body?.code ?? "-") \(body?.error ?? "-")")
+                onUnauthorized?(error)
             }
             throw error
         }

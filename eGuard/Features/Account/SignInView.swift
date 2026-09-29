@@ -107,8 +107,9 @@ struct SignInView: View {
     }
 
     /// Existing families land on the dashboard; a family with no children continues to Add Child.
+    /// If the dashboard couldn't load, Welcome shows the error with a retry instead of assuming no children.
     private func finish() {
-        if model.hasChildren {
+        if model.hasChildren || model.dashboard == nil {
             router.popToRoot()
         } else {
             router.push(.addChild)

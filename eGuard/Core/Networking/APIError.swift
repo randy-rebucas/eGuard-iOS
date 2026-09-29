@@ -22,7 +22,7 @@ nonisolated enum APIError: LocalizedError, Equatable, Sendable {
         case .server(_, _, let message): message
         case .network(let message): message
         case .decoding: "eGuard received an unexpected response. Please try again."
-        case .notSignedIn: "Sign in to continue."
+        case .notSignedIn: "Your session has ended. Please sign in again."
         }
     }
 

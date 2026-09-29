@@ -45,6 +45,28 @@ struct AccountTests {
         #expect(model.unreadAlerts > 0)
     }
 
+    @Test func signInFailsWhenTheServerRejectsTheNewSession() async {
+        let api = MockEGuardAPI.seeded()
+        let model = AppModel.mock(api: api)
+        api.nextDashboardError = APIError.server(status: 401, code: "unauthorized", message: "Sign in again to continue.")
+        await #expect(throws: APIError.self) {
+            try await model.signIn(email: "randy@example.com", password: "ChangeMe123!")
+        }
+        #expect(!model.isSignedIn)
+        #expect(model.dashboard == nil)
+        #expect(model.sessionEndedMessage == "Sign in again to continue.")
+    }
+
+    @Test func signInKeepsTheSessionWhenTheDashboardFailsForOtherReasons() async throws {
+        let api = MockEGuardAPI.seeded()
+        let model = AppModel.mock(api: api)
+        api.nextDashboardError = APIError.network("Offline.")
+        try await model.signIn(email: "randy@example.com", password: "ChangeMe123!")
+        #expect(model.isSignedIn)
+        #expect(model.dashboard == nil)
+        #expect(model.refreshError == "Offline.")
+    }
+
     @Test func unauthorizedClearsTheSession() async {
         let api = MockEGuardAPI.seeded()
         let model = AppModel.mock(api: api, signedIn: true)

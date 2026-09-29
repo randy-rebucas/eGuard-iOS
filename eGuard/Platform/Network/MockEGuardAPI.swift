@@ -37,6 +37,8 @@ final class MockEGuardAPI: EGuardAPIService {
     )
     /// Thrown by the next call, then cleared. Lets tests exercise error paths.
     var nextError: APIError?
+    /// Thrown by the next `dashboard()` call only, then cleared. Lets tests fail the post-sign-in load.
+    var nextDashboardError: APIError?
     /// How many polls a batch needs before automatic items verify.
     var pollsUntilVerified = 2
 
@@ -358,7 +360,7 @@ final class MockEGuardAPI: EGuardAPIService {
         HelpArticle(slug: "data-privacy", category: "PRIVACY", title: "What eGuard stores", summary: "Configuration, verification results, and optional location history.",
                     body: ["eGuard stores the protections you chose and what each device reports about them.", "Location history is off unless the family admin turns it on, and it is deleted when turned off."]),
         HelpArticle(slug: "faq-multiple-children", category: "FAQ", title: "Can I protect more than one child?", summary: "Yes. Add each child and pair their devices.",
-                    body: ["Every child gets their own profile, protections, and devices.", "Your plan's device limit is shown on the Subscription screen."]),
+                    body: ["Every child gets their own profile, protections, and devices.", "Your plan's device limit is shown on the Your plan screen in Settings."]),
     ]
 
     // MARK: Auth
@@ -511,6 +513,10 @@ final class MockEGuardAPI: EGuardAPIService {
 
     func dashboard() async throws -> Dashboard {
         try gate()
+        if let error = nextDashboardError {
+            nextDashboardError = nil
+            throw error
+        }
         let user = try requireUser()
         let attention = summaries.filter { $0.status == .attention }.count
         let summary: String

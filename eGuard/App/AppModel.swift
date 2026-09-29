@@ -40,6 +40,8 @@ final class AppModel {
     private(set) var pushToken: String?
     /// The most recent server error while refreshing shared data, for a banner.
     private(set) var refreshError: String?
+    /// Why the last session ended when the server rejected it, shown on Welcome so the parent knows to sign in again.
+    private(set) var sessionEndedMessage: String?
     /// Child photos by versioned URL.
     var photoCache: [String: Data] = [:]
 
@@ -155,7 +157,7 @@ final class AppModel {
             environment: environment,
             network: NetworkMonitor()
         )
-        client.onUnauthorized = { [weak model] in model?.handleUnauthorized() }
+        client.onUnauthorized = { [weak model] error in model?.handleUnauthorized(reason: error.localizedDescription) }
         return model
     }
 
@@ -219,16 +221,21 @@ final class AppModel {
     /// Reloads the Home tab data and the unread badge. A 401 signs the parent out.
     func refreshDashboard() async {
         do {
-            let dashboard = try await api.dashboard()
-            self.dashboard = dashboard
-            user = dashboard.user
-            unreadAlerts = dashboard.unreadAlerts
-            refreshError = nil
+            try await loadDashboard()
         } catch let error as APIError where error.isUnauthorized {
-            handleUnauthorized()
+            handleUnauthorized(reason: error.localizedDescription)
         } catch {
             refreshError = error.localizedDescription
         }
+    }
+
+    /// Fetches the dashboard and stores it, or throws the API error for the caller to handle.
+    private func loadDashboard() async throws {
+        let dashboard = try await api.dashboard()
+        self.dashboard = dashboard
+        user = dashboard.user
+        unreadAlerts = dashboard.unreadAlerts
+        refreshError = nil
     }
 
     func refreshUnreadCount() async {
@@ -251,12 +258,12 @@ final class AppModel {
 
     func register(name: String, email: String, password: String) async throws {
         let response = try await api.register(name: name, email: email, password: password, familyName: nil)
-        await startSession(response)
+        try await startSession(response)
     }
 
     func signIn(email: String, password: String) async throws {
         let response = try await api.login(email: email, password: password)
-        await startSession(response)
+        try await startSession(response)
     }
 
     /// Continue with Apple. Retries with the guardian confirmation when the server asks for it.
@@ -268,14 +275,25 @@ final class AppModel {
         } catch let error as APIError where error.code == "guardian_required" {
             response = try await api.social(provider: .apple, idToken: identityToken, name: fullName, guardian: true)
         }
-        await startSession(response)
+        try await startSession(response)
         return response.isNew ?? false
     }
 
-    private func startSession(_ response: AuthResponse) async {
+    /// Stores the new session and loads the dashboard. Throws when the server rejects the token it
+    /// just issued, so sign-in fails visibly instead of continuing into the app without a session.
+    /// Other dashboard failures keep the session and surface through `refreshError`.
+    private func startSession(_ response: AuthResponse) async throws {
         sessionStore.save(response.session)
         user = response.user
-        await refreshDashboard()
+        sessionEndedMessage = nil
+        do {
+            try await loadDashboard()
+        } catch let error as APIError where error.isUnauthorized {
+            handleUnauthorized(reason: error.localizedDescription)
+            throw error
+        } catch {
+            refreshError = error.localizedDescription
+        }
         if let pushToken {
             try? await api.registerPushToken(pushToken)
         }
@@ -288,11 +306,14 @@ final class AppModel {
     }
 
     /// Clears the session without a server call, e.g. after a 401.
-    func handleUnauthorized() {
+    /// `reason` is the server's message when the session was rejected; nil for a deliberate sign-out.
+    func handleUnauthorized(reason: String? = nil) {
         sessionStore.clear()
         user = nil
         dashboard = nil
         unreadAlerts = 0
+        refreshError = nil
+        sessionEndedMessage = reason
     }
 
     func updatePushToken(_ token: String) {

@@ -101,7 +101,16 @@ struct HelpSupportView: View {
 
     private var supportBanner: some View {
         ZStack(alignment: .bottomLeading) {
-            FamilyIllustration(height: 160)
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: 160)
+                .overlay {
+                    Image("FamilySunset")
+                        .resizable()
+                        .scaledToFill()
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("A family sitting together on a beach at sunset")
             Text("We're here to help your family stay safe.")
                 .font(EGuardTypography.headline)
                 .foregroundStyle(EGuardColors.textPrimary)

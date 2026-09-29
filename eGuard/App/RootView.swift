@@ -42,6 +42,11 @@ struct RootView: View {
                 await model.refreshDashboard()
             }
         }
+        .onChange(of: model.isSignedIn) { _, isSignedIn in
+            // Losing the session (a 401 or sign-out) must not leave the parent on a signed-in screen.
+            guard !isSignedIn else { return }
+            router.show(.home)
+        }
     }
 
     private var navigationStack: some View {

@@ -1,13 +1,16 @@
 import SwiftUI
 
-/// 17 Subscription, from `GET /subscription`. iOS has no in-app billing yet, so upgrades route to support.
+/// 17 Your plan, from `GET /subscription`. Payments live in the web app, so this screen is
+/// read-only: it shows the current plan, what it includes, and device usage. Any plan change
+/// goes through support.
 struct SubscriptionView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
     @State private var state: LoadState<SubscriptionInfo> = .loading
 
     var body: some View {
-        EGuardScreen {
+        // No footer bar: the plan is read-only here, and the support button lives inside the card.
+        EGuardScreen(showsActionBackground: false) {
             switch state {
             case .loading:
                 LoadingCard()
@@ -15,54 +18,12 @@ struct SubscriptionView: View {
                 ErrorCard(message: message) { Task { await loadSubscription() } }
             case .loaded(let info):
                 planCard(info)
-
-                EGuardCard {
-                    SectionHeader(title: "What's included")
-                    ForEach(info.features) { feature in
-                        HStack(spacing: EGuardSpacing.sm) {
-                            Image(systemName: feature.included ? "checkmark.circle.fill" : "lock.circle.fill")
-                                .foregroundStyle(feature.included ? EGuardColors.success : EGuardColors.neutral)
-                            Text(feature.label)
-                                .font(EGuardTypography.label)
-                                .foregroundStyle(feature.included ? EGuardColors.textPrimary : EGuardColors.textSecondary)
-                            Spacer()
-                            if !feature.included, let upgrade = info.upgrade {
-                                StatusPill(text: upgrade.name.replacingOccurrences(of: "eGuard ", with: ""), tint: EGuardColors.tileYellow)
-                            }
-                        }
-                        .padding(.vertical, EGuardSpacing.xxs)
-                        .accessibilityElement(children: .combine)
-                        if feature.id != info.features.last?.id { Divider() }
-                    }
-                }
-
-                EGuardCard {
-                    SectionHeader(title: "Plan Usage")
-                    Text("\(info.usage.devicesUsed) of \(info.usage.deviceLimit) devices used")
-                        .font(EGuardTypography.label)
-                    ProgressView(value: Double(info.usage.devicesUsed), total: Double(max(info.usage.deviceLimit, 1)))
-                        .tint(EGuardColors.primary)
-                    EGuardValueRow(label: "Children", value: "\(info.usage.children)")
-                }
-
-                if !info.billingAvailable {
-                    Text("Plan changes aren't available in the iPhone app yet. Contact support to upgrade or change your plan.")
-                        .font(EGuardTypography.caption)
-                        .foregroundStyle(EGuardColors.textSecondary)
-                }
+                planUsage(info)
             }
         } actions: {
-            if let info = state.value {
-                if info.billingAvailable, info.upgrade != nil, info.canManage {
-                    Button("Upgrade to \(info.upgrade?.name ?? "Family")") { router.push(.supportTicket) }
-                        .buttonStyle(.eGuardPrimary)
-                } else {
-                    Button("Contact Support About Your Plan") { router.push(.supportTicket) }
-                        .buttonStyle(.eGuardSecondary)
-                }
-            }
+            EmptyView()
         }
-        .navigationTitle("Subscription")
+        .navigationTitle("Your plan")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadSubscription() }
     }
@@ -72,9 +33,12 @@ struct SubscriptionView: View {
     }
 
     private func planCard(_ info: SubscriptionInfo) -> some View {
-        EGuardCard {
+        // Only features the plan includes are listed; there is no in-app upgrade path to point at.
+        let included = info.features.filter(\.included)
+
+        return EGuardCard {
             HStack(spacing: EGuardSpacing.md) {
-                IconTile(symbolName: "crown.fill", tint: EGuardColors.tileYellow, size: 56)
+                IconTile(symbolName: "rosette", tint: EGuardColors.tileYellow, size: 56)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(info.plan).font(EGuardTypography.title3)
                     Text(info.isActive ? "Active Plan" : "Expired")
@@ -83,14 +47,42 @@ struct SubscriptionView: View {
                 }
                 Spacer()
             }
-            Divider()
-            if let label = info.renewsLabel {
-                EGuardValueRow(label: "Renewal", value: label)
+            .accessibilityElement(children: .combine)
+
+            if !included.isEmpty {
+                VStack(alignment: .leading, spacing: EGuardSpacing.xs) {
+                    ForEach(included) { feature in
+                        HStack(spacing: EGuardSpacing.sm) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(EGuardColors.success)
+                            Text(feature.label)
+                                .font(EGuardTypography.label)
+                                .foregroundStyle(EGuardColors.textPrimary)
+                            Spacer(minLength: 0)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+                .padding(.top, EGuardSpacing.xxs)
             }
-            if let store = info.store {
-                EGuardValueRow(label: "Billed through", value: store.name == "GOOGLE_PLAY" ? "Google Play" : store.name)
-            }
+
+            Button("Contact support") { router.push(.supportTicket) }
+                .buttonStyle(.eGuardSecondary)
+                .padding(.top, EGuardSpacing.xs)
         }
+    }
+
+    private func planUsage(_ info: SubscriptionInfo) -> some View {
+        VStack(alignment: .leading, spacing: EGuardSpacing.xs) {
+            SectionHeader(title: "Plan Usage")
+            Text("\(info.usage.devicesUsed) of \(info.usage.deviceLimit) devices used")
+                .font(EGuardTypography.label)
+                .foregroundStyle(EGuardColors.textSecondary)
+            ProgressView(value: Double(info.usage.devicesUsed), total: Double(max(info.usage.deviceLimit, 1)))
+                .tint(EGuardColors.primary)
+        }
+        .padding(.horizontal, EGuardSpacing.xxs)
+        .accessibilityElement(children: .combine)
     }
 }
 

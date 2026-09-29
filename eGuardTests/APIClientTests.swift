@@ -73,11 +73,11 @@ struct APIClientTests {
 
     @Test func unauthorizedClearsTheSessionThroughTheCallback() async {
         let (client, store) = makeClient()
-        var signedOut = false
-        client.onUnauthorized = { signedOut = true; store.clear() }
+        var reason: String?
+        client.onUnauthorized = { error in reason = error.localizedDescription; store.clear() }
         StubURLProtocol.handler = { _ in (401, Data(#"{"error":"Your session has ended.","code":"invalid_token"}"#.utf8)) }
         _ = try? await client.send(.get("dashboard"), as: Dashboard.self)
-        #expect(signedOut)
+        #expect(reason == "Your session has ended.")
         #expect(store.session == nil)
     }
 
