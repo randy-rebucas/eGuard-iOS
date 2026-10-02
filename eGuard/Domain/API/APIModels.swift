@@ -34,11 +34,22 @@ nonisolated struct AppInfo: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Lenient enums
+
+/// Decodes a string enum, falling back to a safe case when the server adds a value this build doesn't know.
+/// One new server value must never break decoding of a whole screen.
+nonisolated func decodeLenient<T: RawRepresentable>(_ decoder: Decoder, fallback: T) throws -> T where T.RawValue == String {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    return T(rawValue: raw) ?? fallback
+}
+
 // MARK: - Auth and user
 
 nonisolated enum UserRole: String, Codable, Sendable {
     case familyAdmin = "FAMILY_ADMIN"
     case parent = "PARENT"
+
+    init(from decoder: Decoder) throws { self = try decodeLenient(decoder, fallback: .parent) }
 
     var title: String {
         switch self {
@@ -78,11 +89,15 @@ nonisolated struct APIUser: Codable, Equatable, Identifiable, Sendable {
     var family: FamilyRef
     var notifications: NotificationPrefs
     var twoFactor: Bool
+    /// False for Apple/Google sign-ups that never set a password. Older servers omit it.
+    var hasPassword: Bool?
     var emailVerified: Bool?
     var createdAt: Date
 
     var isAdmin: Bool { role == .familyAdmin }
     var isEmailVerified: Bool { emailVerified ?? true }
+    /// Whether password-based confirmations apply. Without one, deletions use "Type DELETE".
+    var canUsePassword: Bool { hasPassword ?? true }
 }
 
 nonisolated struct AuthResponse: Codable, Equatable, Sendable {
@@ -90,13 +105,52 @@ nonisolated struct AuthResponse: Codable, Equatable, Sendable {
     var expiresAt: Date
     var user: APIUser
     var isNew: Bool?
+    /// Set by `POST /auth/two-factor` when a recovery code was used instead of an authenticator code.
+    var usedRecoveryCode: Bool?
+    var recoveryCodesLeft: Int?
 
     var session: APISession { APISession(token: token, expiresAt: expiresAt) }
+}
+
+/// Returned instead of a session when two-step verification is on. No session exists yet.
+nonisolated struct TwoFactorChallenge: Codable, Hashable, Sendable {
+    var challenge: String
+    var expiresAt: Date
+    var isNew: Bool?
+}
+
+/// The two shapes a sign-in call can answer with.
+nonisolated enum LoginResult: Decodable, Equatable, Sendable {
+    case signedIn(AuthResponse)
+    case twoFactorRequired(TwoFactorChallenge)
+
+    private enum CodingKeys: String, CodingKey { case twoFactorRequired }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if try container.decodeIfPresent(Bool.self, forKey: .twoFactorRequired) == true {
+            self = .twoFactorRequired(try TwoFactorChallenge(from: decoder))
+        } else {
+            self = .signedIn(try AuthResponse(from: decoder))
+        }
+    }
+
+    var auth: AuthResponse? {
+        if case .signedIn(let response) = self { return response }
+        return nil
+    }
 }
 
 nonisolated enum SocialProvider: String, Codable, Sendable {
     case apple
     case google
+
+    var title: String {
+        switch self {
+        case .apple: "Apple"
+        case .google: "Google"
+        }
+    }
 }
 
 nonisolated struct OKResponse: Codable, Sendable {
@@ -117,12 +171,85 @@ nonisolated struct SessionInfo: Codable, Equatable, Identifiable, Sendable {
     var current: Bool
 }
 
+/// What a parent must send to delete the account, a child, a device, or a browser.
+/// Parents with a password send it; Apple/Google parents without one type DELETE instead.
+nonisolated enum DeletionConfirmation: Encodable, Equatable, Sendable {
+    case password(String)
+    case typedDelete
+
+    private enum CodingKeys: String, CodingKey { case password, confirm }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .password(let password): try container.encode(password, forKey: .password)
+        case .typedDelete: try container.encode("DELETE", forKey: .confirm)
+        }
+    }
+
+    /// Whether the typed text satisfies the confirmation the account needs.
+    static func make(user: APIUser?, input: String) -> DeletionConfirmation? {
+        if user?.canUsePassword ?? true {
+            return input.isEmpty ? nil : .password(input)
+        }
+        return input.trimmingCharacters(in: .whitespaces) == "DELETE" ? .typedDelete : nil
+    }
+}
+
+nonisolated struct AccountDeleted: Codable, Sendable {
+    var ok: Bool?
+    /// `"family"` when the admin's account took the whole family with it, `"account"` otherwise.
+    var deleted: String?
+}
+
+/// A linked Apple or Google sign-in, from `GET /me/identities`.
+nonisolated struct LinkedIdentity: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var provider: String
+    var email: String?
+    var createdAt: Date?
+
+    var providerTitle: String { SocialProvider(rawValue: provider)?.title ?? provider.capitalized }
+}
+
+nonisolated struct TwoFactorStatus: Codable, Equatable, Sendable {
+    /// False when the server isn't set up for two-step verification; hide the option then.
+    var available: Bool
+    var enabled: Bool
+    var recoveryCodesLeft: Int?
+}
+
+nonisolated struct TwoFactorSetup: Codable, Equatable, Sendable {
+    var secret: String
+    /// An `otpauth://` link for a QR code or for handing to an authenticator app on this phone.
+    var uri: String
+}
+
+nonisolated struct RecoveryCodes: Codable, Sendable {
+    var recoveryCodes: [String]
+}
+
+/// `GET /auth/invite?token=`: which family an invitation is for, shown before accepting.
+nonisolated struct InvitationPreview: Codable, Equatable, Sendable {
+    var name: String
+    var email: String
+    var familyName: String
+    var invitedBy: String?
+}
+
+nonisolated struct InvitationDeclined: Codable, Sendable {
+    var ok: Bool?
+    var familyName: String?
+}
+
 // MARK: - Children and devices
 
 nonisolated enum ChildStatus: String, Codable, Sendable {
     case protected
     case attention
     case notconfigured
+
+    init(from decoder: Decoder) throws { self = try decodeLenient(decoder, fallback: .attention) }
 
     var title: String {
         switch self {
@@ -137,24 +264,48 @@ nonisolated struct HealthScore: Codable, Equatable, Sendable {
     var score: Int
     var total: Int
     var label: String?
+    /// Devices that haven't synced in over a day. They're scored by their last known state.
+    var offline: Int?
+    /// True only when every check passes and no device is offline. Only then say "verified".
+    var verified: Bool?
 
-    var text: String { "\(score) / \(total)" }
+    init(score: Int, total: Int, label: String? = nil, offline: Int? = nil, verified: Bool? = nil) {
+        self.score = score
+        self.total = total
+        self.label = label
+        self.offline = offline
+        self.verified = verified
+    }
+
+    var text: String { total == 0 ? "–" : "\(score) / \(total)" }
     var fraction: Double { total == 0 ? 0 : Double(score) / Double(total) }
+    var offlineCount: Int { offline ?? 0 }
+    var isVerified: Bool { verified ?? (total > 0 && score >= total && offlineCount == 0) }
 
     /// The spec's grade thresholds, used when `label` is absent.
     var grade: String {
         if let label { return label }
-        if total == 0 { return "Not configured" }
-        if score >= total { return "Fully protected" }
+        if total == 0 { return "No devices yet" }
+        if score >= total { return offlineCount > 0 ? "Last known: all set" : "Fully protected" }
         if score >= 8 { return "Good protection" }
         if score >= 5 { return "Needs attention" }
         return "Action required"
+    }
+
+    /// A one-line note about offline devices, or nil when every device reported recently.
+    var offlineNote: String? {
+        guard offlineCount > 0 else { return nil }
+        return offlineCount == 1
+            ? "1 device is offline and shows its last known state."
+            : "\(offlineCount) devices are offline and show their last known state."
     }
 }
 
 nonisolated enum DevicePlatformKind: String, Codable, Sendable {
     case android = "ANDROID"
     case ios = "IOS"
+
+    init(from decoder: Decoder) throws { self = try decodeLenient(decoder, fallback: .android) }
 
     var title: String {
         switch self {
@@ -194,6 +345,8 @@ nonisolated enum DeviceState: String, Codable, Sendable {
     case healthy
     case issues
     case offline
+
+    init(from decoder: Decoder) throws { self = try decodeLenient(decoder, fallback: .issues) }
 
     var title: String {
         switch self {
@@ -292,10 +445,165 @@ nonisolated struct PairingCode: Codable, Equatable, Sendable {
     var code: String
     var expiresAt: Date
     var childName: String
+    /// `"BROWSER"` for an eGuard browser extension code; nil or `"DEVICE"` for the phone app.
+    var kind: String?
+
+    var isBrowserCode: Bool { kind == "BROWSER" }
 }
 
 nonisolated struct PhotoUploadResponse: Codable, Sendable {
     var photoUrl: String
+}
+
+/// An eGuard browser extension install, from `GET /browsers`. Browsers never enforce a policy yet.
+nonisolated struct ConnectedBrowser: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var childId: String
+    var childName: String
+    var deviceLabel: String
+    var browser: String?
+    var browserVersion: String?
+    var extensionVersion: String?
+    var platform: String?
+    var lastSeenAt: Date?
+    /// False when eGuard disconnected it for security; remove it and add it again.
+    var connected: Bool
+    var createdAt: Date?
+
+    var detail: String {
+        [browser, platform].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+nonisolated struct BrowsersResponse: Codable, Sendable {
+    var browsers: [ConnectedBrowser]
+}
+
+/// A website the child asked to open from the browser's block page.
+nonisolated struct BrowserAccessRequest: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var domain: String
+    var reason: String?
+    var status: String
+    var duration: String?
+    var expiresAt: Date?
+    var createdAt: Date
+    var decidedAt: Date?
+    var decidedBy: String?
+
+    var isPending: Bool { status == "PENDING" }
+}
+
+nonisolated struct BrowserAccessRequests: Codable, Equatable, Sendable {
+    var pending: [BrowserAccessRequest]
+    var recent: [BrowserAccessRequest]
+}
+
+/// How long an approved website stays open: `15M`, `1H`, `TODAY` or `ALWAYS`.
+nonisolated enum BrowserAccessDuration: String, CaseIterable, Codable, Identifiable, Sendable {
+    case fifteenMinutes = "15M"
+    case oneHour = "1H"
+    case today = "TODAY"
+    case always = "ALWAYS"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fifteenMinutes: "15 minutes"
+        case .oneHour: "1 hour"
+        case .today: "Until midnight"
+        case .always: "Always"
+        }
+    }
+}
+
+nonisolated enum BrowserAccessDecision: Encodable, Equatable, Sendable {
+    case approve(BrowserAccessDuration)
+    case deny
+
+    private enum CodingKeys: String, CodingKey { case decision, duration }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .approve(let duration):
+            try container.encode("APPROVE", forKey: .decision)
+            try container.encode(duration, forKey: .duration)
+        case .deny:
+            try container.encode("DENY", forKey: .decision)
+        }
+    }
+}
+
+nonisolated struct BrowserAccessDecided: Codable, Sendable {
+    var request: BrowserAccessRequest
+}
+
+nonisolated struct BrowserSchedule: Codable, Equatable, Sendable {
+    var enabled: Bool
+    var startTime: String
+    var endTime: String
+}
+
+nonisolated struct BrowserCategory: Codable, Equatable, Identifiable, Sendable {
+    var key: String
+    var label: String
+    var hint: String?
+
+    var id: String { key }
+}
+
+/// The policy every eGuard browser extension of a child follows, from `GET /children/{id}/browser-policy`.
+nonisolated struct BrowserPolicy: Codable, Equatable, Sendable {
+    var version: Int
+    var safeBrowsing: Bool
+    var safeSearch: Bool
+    var blockedCategories: [String]
+    var blockedDomains: [String]
+    var allowedDomains: [String]
+    var unknownSitesPolicy: String
+    var schedule: BrowserSchedule?
+    var updatedBy: String?
+    var updatedAt: Date?
+    var categories: [BrowserCategory]?
+
+    /// The body for `PUT`, with `baseVersion` so a concurrent edit is refused instead of undone.
+    var update: BrowserPolicyUpdate {
+        BrowserPolicyUpdate(
+            safeBrowsing: safeBrowsing, safeSearch: safeSearch, blockedCategories: blockedCategories,
+            blockedDomains: blockedDomains, allowedDomains: allowedDomains, unknownSitesPolicy: unknownSitesPolicy,
+            schedule: schedule, baseVersion: version
+        )
+    }
+}
+
+nonisolated struct BrowserPolicyUpdate: Encodable, Equatable, Sendable {
+    var safeBrowsing: Bool
+    var safeSearch: Bool
+    var blockedCategories: [String]
+    var blockedDomains: [String]
+    var allowedDomains: [String]
+    var unknownSitesPolicy: String
+    var schedule: BrowserSchedule?
+    var baseVersion: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case safeBrowsing, safeSearch, blockedCategories, blockedDomains, allowedDomains, unknownSitesPolicy, schedule, baseVersion
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(safeBrowsing, forKey: .safeBrowsing)
+        try container.encode(safeSearch, forKey: .safeSearch)
+        try container.encode(blockedCategories, forKey: .blockedCategories)
+        try container.encode(blockedDomains, forKey: .blockedDomains)
+        try container.encode(allowedDomains, forKey: .allowedDomains)
+        try container.encode(unknownSitesPolicy, forKey: .unknownSitesPolicy)
+        // `schedule` is required and may be explicitly null.
+        if let schedule { try container.encode(schedule, forKey: .schedule) } else { try container.encodeNil(forKey: .schedule) }
+        try container.encodeIfPresent(baseVersion, forKey: .baseVersion)
+    }
 }
 
 // MARK: - Health and checks
@@ -306,6 +614,8 @@ nonisolated enum CheckStatus: String, Codable, Sendable {
     case actionRequired = "ACTION_REQUIRED"
     case notConfigured = "NOT_CONFIGURED"
     case unsupported = "UNSUPPORTED"
+
+    init(from decoder: Decoder) throws { self = try decodeLenient(decoder, fallback: .warning) }
 
     var title: String {
         switch self {
@@ -371,11 +681,24 @@ nonisolated struct HealthReport: Codable, Equatable, Sendable {
     var score: Int
     var total: Int
     var label: String?
+    var offline: Int?
+    var verified: Bool?
     var checks: [HealthCheck]
     var toFix: [FixItem]?
     var children: [ChildHealth]?
 
-    var healthScore: HealthScore { HealthScore(score: score, total: total, label: label) }
+    init(score: Int, total: Int, label: String? = nil, offline: Int? = nil, verified: Bool? = nil, checks: [HealthCheck], toFix: [FixItem]? = nil, children: [ChildHealth]? = nil) {
+        self.score = score
+        self.total = total
+        self.label = label
+        self.offline = offline
+        self.verified = verified
+        self.checks = checks
+        self.toFix = toFix
+        self.children = children
+    }
+
+    var healthScore: HealthScore { HealthScore(score: score, total: total, label: label, offline: offline, verified: verified) }
     var fixCount: Int { toFix?.count ?? checks.filter { $0.status.needsAttention }.count }
 }
 
@@ -411,6 +734,8 @@ nonisolated enum Capability: String, Codable, Sendable {
     case guided = "GUIDED"
     case verifyOnly = "VERIFY_ONLY"
     case unsupported = "UNSUPPORTED"
+
+    init(from decoder: Decoder) throws { self = try decodeLenient(decoder, fallback: .verifyOnly) }
 
     var title: String {
         switch self {
@@ -480,6 +805,8 @@ nonisolated enum RequestStatus: String, Codable, Sendable {
     case verified = "VERIFIED"
     case failed = "FAILED"
     case cancelled = "CANCELLED"
+
+    init(from decoder: Decoder) throws { self = try decodeLenient(decoder, fallback: .pending) }
 
     var title: String {
         switch self {
@@ -579,11 +906,33 @@ nonisolated struct BedtimeInfo: Codable, Equatable, Sendable {
     var label: String
 }
 
+/// Where a child's location stands: the same values as `GET /locations`, plus `plan_required`.
+nonisolated enum LocationState: String, Sendable {
+    case located
+    case waiting
+    case sharingOff = "sharing_off"
+    case noDevices = "no_devices"
+    case planRequired = "plan_required"
+
+    var title: String {
+        switch self {
+        case .located: "Sharing enabled"
+        case .waiting: "Waiting for location"
+        case .sharingOff: "Sharing off"
+        case .noDevices: "No devices yet"
+        case .planRequired: "Not on your plan"
+        }
+    }
+}
+
 nonisolated struct LocationInfo: Codable, Equatable, Sendable {
     var sharing: Bool
+    var state: String?
     var placeLabel: String?
     var updatedAt: Date?
     var label: String
+
+    var locationState: LocationState? { state.flatMap(LocationState.init(rawValue:)) }
 }
 
 nonisolated struct DeviceProtectionInfo: Codable, Equatable, Sendable {
@@ -704,6 +1053,10 @@ nonisolated struct ScreenTimeReport: Codable, Equatable, Sendable {
     var days: [DayMinutes]
     var hourly: [Int]?
     var apps: [AppUsage]
+    /// Apps left unnamed because of the plan's `appMonitoringLimit`; 0 or absent otherwise.
+    var hiddenApps: Int?
+
+    var hiddenAppCount: Int { hiddenApps ?? 0 }
 
     /// "↓ 12% vs last week"-style change, or nil when there is nothing to compare.
     var changePercent: Int? {
@@ -720,6 +1073,8 @@ nonisolated enum AppApproval: String, Codable, Sendable {
     case filtered = "FILTERED"
     case blocked = "BLOCKED"
     case pending = "PENDING"
+
+    init(from decoder: Decoder) throws { self = try decodeLenient(decoder, fallback: .allowed) }
 
     var title: String {
         switch self {
@@ -753,17 +1108,34 @@ nonisolated struct ChildApp: Codable, Equatable, Identifiable, Sendable {
     var name: String
     var approval: AppApproval
     var approvalLabel: String
+    /// True while a request waits for the parent, including a blocked app the child asked for again.
+    var requested: Bool?
     var allowed: Bool
     var dailyLimitMinutes: Int?
     var todayMinutes: Int?
     var installedAt: Date?
+
+    init(id: String, name: String, approval: AppApproval, approvalLabel: String, requested: Bool? = nil, allowed: Bool, dailyLimitMinutes: Int?, todayMinutes: Int?, installedAt: Date?) {
+        self.id = id
+        self.name = name
+        self.approval = approval
+        self.approvalLabel = approvalLabel
+        self.requested = requested
+        self.allowed = allowed
+        self.dailyLimitMinutes = dailyLimitMinutes
+        self.todayMinutes = todayMinutes
+        self.installedAt = installedAt
+    }
+
+    /// Show Approve and Decline while this is true, even for an app that is already blocked.
+    var isRequested: Bool { requested ?? (approval == .pending) }
 
     /// The design's subtitle: "Always allowed", "1 hour/day", "Ask parent", or "Blocked".
     var subtitle: String {
         switch approval {
         case .alwaysAllowed: return "Always allowed"
         case .pending: return "Ask parent"
-        case .blocked: return "Blocked"
+        case .blocked: return isRequested ? "Blocked · asked again" : "Blocked"
         case .allowed, .filtered:
             if let minutes = dailyLimitMinutes {
                 return ProtectionSettings.formatDailyAllowance(minutes).replacingOccurrences(of: " / day", with: "/day")
@@ -780,9 +1152,22 @@ nonisolated struct AppCounts: Codable, Equatable, Sendable {
     var installed: Int
 }
 
+/// Set on plans with an `appMonitoringLimit`: how many more apps exist than are listed.
+nonisolated struct AppsLimited: Codable, Equatable, Sendable {
+    var hidden: Int
+    var message: String
+}
+
 nonisolated struct AppsResponse: Codable, Equatable, Sendable {
     var counts: AppCounts
     var apps: [ChildApp]
+    var limited: AppsLimited?
+
+    init(counts: AppCounts, apps: [ChildApp], limited: AppsLimited? = nil) {
+        self.counts = counts
+        self.apps = apps
+        self.limited = limited
+    }
 }
 
 nonisolated struct AppRuleUpdate: Codable, Equatable, Sendable {
@@ -834,6 +1219,32 @@ nonisolated struct CurrentLocation: Codable, Equatable, Sendable {
     var placeLabel: String?
     var locatedAt: Date
     var updatedLabel: String?
+    /// Under 15 minutes old with the device still syncing. Otherwise show "Last seen", never live.
+    var fresh: Bool?
+    /// Accuracy over 200 m, e.g. a cell-tower fix. Draw the circle and say "approximate".
+    var approximate: Bool?
+
+    init(deviceId: String, deviceName: String, lat: Double, lng: Double, accuracyM: Double?, placeLabel: String?, locatedAt: Date, updatedLabel: String?, fresh: Bool? = nil, approximate: Bool? = nil) {
+        self.deviceId = deviceId
+        self.deviceName = deviceName
+        self.lat = lat
+        self.lng = lng
+        self.accuracyM = accuracyM
+        self.placeLabel = placeLabel
+        self.locatedAt = locatedAt
+        self.updatedLabel = updatedLabel
+        self.fresh = fresh
+        self.approximate = approximate
+    }
+
+    var isFresh: Bool { fresh ?? (Date.now.timeIntervalSince(locatedAt) < 15 * 60) }
+    var isApproximate: Bool { approximate ?? ((accuracyM ?? 0) > 200) }
+
+    /// "Live · Near Home" or "Last seen Today, 1:28 PM".
+    var freshnessLabel: String {
+        let when = updatedLabel ?? locatedAt.verifiedDescription()
+        return isFresh ? "Live · updated \(when)" : "Last seen \(when)"
+    }
 }
 
 nonisolated struct LocationDevice: Codable, Equatable, Identifiable, Sendable {
@@ -863,9 +1274,26 @@ nonisolated struct LocationHistory: Codable, Equatable, Sendable {
 nonisolated struct LocationResponse: Codable, Equatable, Sendable {
     var childId: String
     var sharing: Bool
+    var state: String?
     var current: CurrentLocation?
     var devices: [LocationDevice]
     var history: LocationHistory
+
+    init(childId: String, sharing: Bool, state: String? = nil, current: CurrentLocation?, devices: [LocationDevice], history: LocationHistory) {
+        self.childId = childId
+        self.sharing = sharing
+        self.state = state
+        self.current = current
+        self.devices = devices
+        self.history = history
+    }
+
+    var locationState: LocationState {
+        if let state, let known = LocationState(rawValue: state) { return known }
+        if devices.isEmpty { return .noDevices }
+        if !sharing { return .sharingOff }
+        return current == nil ? .waiting : .located
+    }
 }
 
 nonisolated struct VisitsPage: Codable, Equatable, Sendable {
@@ -885,6 +1313,7 @@ nonisolated struct FamilyLocation: Codable, Equatable, Identifiable, Sendable {
     var location: CurrentLocation?
 
     var id: String { childId }
+    var locationState: LocationState { LocationState(rawValue: state) ?? (location == nil ? .waiting : .located) }
 }
 
 nonisolated struct FamilyLocations: Codable, Equatable, Sendable {
@@ -898,6 +1327,8 @@ nonisolated enum AlertSeverity: String, Codable, Sendable {
     case attention = "ATTENTION"
     case actionRequired = "ACTION_REQUIRED"
     case critical = "CRITICAL"
+
+    init(from decoder: Decoder) throws { self = try decodeLenient(decoder, fallback: .info) }
 }
 
 nonisolated enum APIAlertCategory: String, Codable, Sendable {
@@ -907,6 +1338,8 @@ nonisolated enum APIAlertCategory: String, Codable, Sendable {
     case screenTime = "SCREEN_TIME"
     case location = "LOCATION"
     case system = "SYSTEM"
+
+    init(from decoder: Decoder) throws { self = try decodeLenient(decoder, fallback: .system) }
 }
 
 nonisolated enum AlertsFilter: String, CaseIterable, Identifiable, Sendable {
@@ -985,8 +1418,37 @@ nonisolated struct FamilyMember: Codable, Equatable, Identifiable, Sendable {
     var name: String
     var email: String
     var role: UserRole
-    var createdAt: Date
+    var createdAt: Date?
     var you: Bool
+    /// True until the invited parent accepts the invitation.
+    var pending: Bool?
+
+    init(id: String, name: String, email: String, role: UserRole, createdAt: Date?, you: Bool, pending: Bool? = nil) {
+        self.id = id
+        self.name = name
+        self.email = email
+        self.role = role
+        self.createdAt = createdAt
+        self.you = you
+        self.pending = pending
+    }
+
+    var isPending: Bool { pending ?? false }
+}
+
+/// What a plan includes. Also returned on `GET /family`. The server enforces these either way.
+nonisolated struct PlanEntitlements: Codable, Equatable, Sendable {
+    var childLimit: Int?
+    var deviceLimit: Int?
+    var locationSharing: Bool?
+    var appMonitoringLimit: Int?
+    var realtimeAlerts: Bool?
+    var advancedReports: Bool?
+    var apiAccess: Bool?
+
+    var hasLocationSharing: Bool { locationSharing ?? true }
+    var hasAdvancedReports: Bool { advancedReports ?? true }
+    var hasRealtimeAlerts: Bool { realtimeAlerts ?? true }
 }
 
 nonisolated struct Family: Codable, Equatable, Sendable {
@@ -995,15 +1457,107 @@ nonisolated struct Family: Codable, Equatable, Sendable {
     var timezone: String
     var members: [FamilyMember]
     var children: [ChildSummary]
+    /// Phones and tablets only.
     var deviceCount: Int
+    /// Phones, tablets and connected browsers: compare this with `deviceLimit`.
+    var devicesUsed: Int?
     var deviceLimit: Int
+    var childCount: Int?
+    var childLimit: Int?
+    var plan: String?
+    var entitlements: PlanEntitlements?
     var canManage: Bool
+
+    init(id: String, name: String, timezone: String, members: [FamilyMember], children: [ChildSummary], deviceCount: Int, devicesUsed: Int? = nil, deviceLimit: Int, childCount: Int? = nil, childLimit: Int? = nil, plan: String? = nil, entitlements: PlanEntitlements? = nil, canManage: Bool) {
+        self.id = id
+        self.name = name
+        self.timezone = timezone
+        self.members = members
+        self.children = children
+        self.deviceCount = deviceCount
+        self.devicesUsed = devicesUsed
+        self.deviceLimit = deviceLimit
+        self.childCount = childCount
+        self.childLimit = childLimit
+        self.plan = plan
+        self.entitlements = entitlements
+        self.canManage = canManage
+    }
+
+    var slotsUsed: Int { devicesUsed ?? deviceCount }
+}
+
+/// `POST /family/members`: the admin invited another parent by email.
+nonisolated struct InvitationSent: Codable, Equatable, Sendable {
+    var id: String
+    var name: String
+    var email: String
+    var role: UserRole?
+    var pending: Bool?
+    /// False when the email failed to send; offer Resend.
+    var emailSent: Bool?
+    var expiresInDays: Int?
 }
 
 nonisolated struct NewMember: Codable, Sendable {
     var name: String
     var email: String
-    var password: String
+}
+
+// MARK: - Organizations
+
+/// A school, community group or business the family joined with a join code.
+nonisolated struct Organization: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var name: String
+    var kind: String
+    var kindLabel: String?
+    var joinedAt: Date?
+
+    var kindTitle: String {
+        if let kindLabel { return kindLabel }
+        switch kind {
+        case "SCHOOL": return "School"
+        case "COMMUNITY": return "Community group"
+        case "BUSINESS": return "Business"
+        default: return kind.capitalized
+        }
+    }
+
+    var symbolName: String {
+        switch kind {
+        case "SCHOOL": "graduationcap.fill"
+        case "COMMUNITY": "person.3.fill"
+        case "BUSINESS": "building.2.fill"
+        default: "building.columns.fill"
+        }
+    }
+}
+
+nonisolated struct OrganizationsResponse: Codable, Equatable, Sendable {
+    var organizations: [Organization]
+    var canManage: Bool
+    /// A sentence to show under the list about what organizations can and can't see.
+    var privacy: String?
+}
+
+nonisolated struct OrganizationPreview: Codable, Equatable, Sendable {
+    var name: String
+    var kind: String
+    var kindLabel: String?
+    var alreadyJoined: Bool
+    var message: String
+}
+
+nonisolated struct OrganizationJoined: Codable, Sendable {
+    var ok: Bool?
+    var name: String
+    var organizations: [Organization]?
+}
+
+nonisolated struct OrganizationLeft: Codable, Sendable {
+    var ok: Bool?
+    var name: String?
 }
 
 nonisolated struct PrivacySettings: Codable, Equatable, Sendable {
@@ -1031,6 +1585,14 @@ nonisolated struct PlanUsage: Codable, Equatable, Sendable {
     var devicesUsed: Int
     var deviceLimit: Int
     var children: Int
+    var childLimit: Int?
+
+    init(devicesUsed: Int, deviceLimit: Int, children: Int, childLimit: Int? = nil) {
+        self.devicesUsed = devicesUsed
+        self.deviceLimit = deviceLimit
+        self.children = children
+        self.childLimit = childLimit
+    }
 }
 
 nonisolated struct StoreInfo: Codable, Equatable, Sendable {
@@ -1038,6 +1600,16 @@ nonisolated struct StoreInfo: Codable, Equatable, Sendable {
     var productId: String?
     var autoRenewing: Bool?
     var expiresAt: Date?
+
+    /// How the plan is paid, in parent-friendly words. Sponsor codes are redeemed on the web only.
+    var title: String {
+        switch name {
+        case "VOUCHER": "Sponsored plan"
+        case "GOOGLE_PLAY": "Google Play"
+        case "PAYMONGO": autoRenewing == false ? "Pass" : "Web subscription"
+        default: name.capitalized
+        }
+    }
 }
 
 nonisolated struct UpgradeInfo: Codable, Equatable, Sendable {
@@ -1048,17 +1620,36 @@ nonisolated struct UpgradeInfo: Codable, Equatable, Sendable {
 
 nonisolated struct SubscriptionInfo: Codable, Equatable, Sendable {
     var plan: String
+    var planId: String?
     var status: String
     var renewsAt: Date?
     var renewsLabel: String?
     var features: [PlanFeature]
+    var entitlements: PlanEntitlements?
     var usage: PlanUsage
     var canManage: Bool
     var billingAvailable: Bool
     var store: StoreInfo?
     var upgrade: UpgradeInfo?
 
+    init(plan: String, planId: String? = nil, status: String, renewsAt: Date?, renewsLabel: String?, features: [PlanFeature], entitlements: PlanEntitlements? = nil, usage: PlanUsage, canManage: Bool, billingAvailable: Bool, store: StoreInfo?, upgrade: UpgradeInfo?) {
+        self.plan = plan
+        self.planId = planId
+        self.status = status
+        self.renewsAt = renewsAt
+        self.renewsLabel = renewsLabel
+        self.features = features
+        self.entitlements = entitlements
+        self.usage = usage
+        self.canManage = canManage
+        self.billingAvailable = billingAvailable
+        self.store = store
+        self.upgrade = upgrade
+    }
+
     var isActive: Bool { status == "ACTIVE" }
+    /// Sponsored by an organization through a code redeemed on the website.
+    var isSponsored: Bool { store?.name == "VOUCHER" }
 }
 
 // MARK: - Help and support

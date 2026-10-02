@@ -6,15 +6,19 @@ import SwiftUI
 final class AppsManagementViewModel {
     var filter: AppsFilter = .installed
     var state: LoadState<AppsResponse> = .loading
+    var websiteRequests: [BrowserAccessRequest] = []
     var isAdding = false
     var newAppName = ""
     var newAppApproval: AppApproval = .allowed
     var errorMessage: String?
     var limitEditing: ChildApp?
+    var websiteRequestToApprove: BrowserAccessRequest?
 
     func load(childId: String, api: EGuardAPIService) async {
         if state.value == nil { state = .loading }
         state = await eGuard.load { try await api.apps(childId: childId, filter: filter) }
+        // Website requests come from the browser extension and show alongside app requests.
+        websiteRequests = (try? await api.browserAccessRequests(childId: childId))?.pending ?? []
     }
 
     func setAllowed(_ allowed: Bool, app: ChildApp, childId: String, api: EGuardAPIService) async {
@@ -46,6 +50,15 @@ final class AppsManagementViewModel {
             return false
         }
     }
+
+    func decideWebsite(_ request: BrowserAccessRequest, decision: BrowserAccessDecision, childId: String, api: EGuardAPIService) async {
+        do {
+            _ = try await api.decideBrowserAccessRequest(id: request.id, decision: decision)
+            await load(childId: childId, api: api)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 }
 
 /// 13 App Management, from `GET /children/{id}/apps?filter=`.
@@ -64,7 +77,7 @@ struct AppsManagementView: View {
                     let count = switch filter {
                     case .installed: counts.installed
                     case .blocked: counts.blocked
-                    case .pending: counts.pending
+                    case .pending: counts.pending + (filter == .pending ? viewModel.websiteRequests.count : 0)
                     }
                     return count > 0 ? "\(filter.title) (\(count))" : filter.title
                 }
@@ -77,9 +90,14 @@ struct AppsManagementView: View {
             case .failed(let message):
                 ErrorCard(message: message) { Task { await viewModel.load(childId: childId, api: model.api) } }
             case .loaded(let response):
+                if viewModel.filter == .pending, !viewModel.websiteRequests.isEmpty {
+                    websiteRequestsCard
+                }
                 if response.apps.isEmpty {
-                    EGuardCard {
-                        EmptyStateView(symbolName: "square.grid.2x2", title: emptyTitle, message: emptyMessage, tint: EGuardColors.tilePurple)
+                    if viewModel.filter != .pending || viewModel.websiteRequests.isEmpty {
+                        EGuardCard {
+                            EmptyStateView(symbolName: "square.grid.2x2", title: emptyTitle, message: emptyMessage, tint: EGuardColors.tilePurple)
+                        }
                     }
                 } else {
                     EGuardCard {
@@ -87,6 +105,17 @@ struct AppsManagementView: View {
                             appRow(app)
                             if app.id != response.apps.last?.id { Divider() }
                         }
+                    }
+                }
+                if let limited = response.limited {
+                    // The plan names only this many apps. Neutral wording: no upgrade call to action on iOS.
+                    EGuardCard {
+                        Label("\(limited.hidden) more app\(limited.hidden == 1 ? "" : "s") not shown", systemImage: "eye.slash.fill")
+                            .font(EGuardTypography.headline)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                        Text(APIClient.storeSafeMessage(limited.message, status: 409))
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
                     }
                 }
             }
@@ -119,6 +148,18 @@ struct AppsManagementView: View {
             }
             .presentationDetents([.medium])
         }
+        .confirmationDialog("Allow \(viewModel.websiteRequestToApprove?.domain ?? "this site") for how long?", isPresented: Binding(get: { viewModel.websiteRequestToApprove != nil }, set: { if !$0 { viewModel.websiteRequestToApprove = nil } }), titleVisibility: .visible) {
+            ForEach(BrowserAccessDuration.allCases) { duration in
+                Button(duration.title) {
+                    guard let request = viewModel.websiteRequestToApprove else { return }
+                    viewModel.websiteRequestToApprove = nil
+                    Task { await viewModel.decideWebsite(request, decision: .approve(duration), childId: childId, api: model.api) }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\"Always\" adds the site to the allowed list. The browser picks up the answer within 5 minutes.")
+        }
     }
 
     private var emptyTitle: String {
@@ -133,13 +174,41 @@ struct AppsManagementView: View {
         switch viewModel.filter {
         case .installed: "Apps appear here as soon as the paired device reports them."
         case .blocked: "Switch an app off in the Installed list to block it."
-        case .pending: "When your child asks for an app, it shows up here for approval."
+        case .pending: "When your child asks for an app or a website, it shows up here for approval."
+        }
+    }
+
+    /// Sites the child asked to open from the browser extension's block page.
+    private var websiteRequestsCard: some View {
+        EGuardCard {
+            SectionHeader(title: "Website requests")
+            ForEach(viewModel.websiteRequests) { request in
+                HStack(spacing: EGuardSpacing.sm) {
+                    IconTile(symbolName: "globe", tint: EGuardColors.warning)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(request.domain).font(EGuardTypography.label)
+                        Text(request.reason ?? request.createdAt.relativeDescription())
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
+                    Spacer()
+                    Button("Deny") { Task { await viewModel.decideWebsite(request, decision: .deny, childId: childId, api: model.api) } }
+                        .font(EGuardTypography.label)
+                        .foregroundStyle(EGuardColors.danger)
+                    Button("Allow") { viewModel.websiteRequestToApprove = request }
+                        .font(EGuardTypography.label)
+                        .foregroundStyle(EGuardColors.primary)
+                }
+                .padding(.vertical, EGuardSpacing.xxs)
+                .accessibilityIdentifier("apps.webrequest.\(request.id)")
+                if request.id != viewModel.websiteRequests.last?.id { Divider() }
+            }
         }
     }
 
     private func appRow(_ app: ChildApp) -> some View {
         HStack(spacing: EGuardSpacing.sm) {
-            IconTile(symbolName: "app.fill", tint: app.approval == .blocked ? EGuardColors.danger : (app.approval == .pending ? EGuardColors.warning : EGuardColors.primary))
+            IconTile(symbolName: "app.fill", tint: app.approval == .blocked ? EGuardColors.danger : (app.isRequested ? EGuardColors.warning : EGuardColors.primary))
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name).font(EGuardTypography.label)
                 Text(app.subtitle)
@@ -147,7 +216,8 @@ struct AppsManagementView: View {
                     .foregroundStyle(app.approval == .blocked ? EGuardColors.danger : EGuardColors.textSecondary)
             }
             Spacer()
-            if app.approval == .pending {
+            if app.isRequested {
+                // Either answer resolves the request, even for an app that is already blocked.
                 Button("Decline") { Task { await viewModel.setAllowed(false, app: app, childId: childId, api: model.api) } }
                     .font(EGuardTypography.label)
                     .foregroundStyle(EGuardColors.danger)

@@ -170,6 +170,49 @@ final class OnboardingUITests: XCTestCase {
     }
 
     @MainActor
+    func testModeChooserLeadsToTheParentSideOrChildSetup() throws {
+        let app = launch(arguments: ["-modeUnset"])
+        waitFor(app.buttons["mode.parent"])
+        app.buttons["mode.child"].tap()
+        waitFor(app.textFields["childSetup.code"])
+        XCTAssertFalse(app.buttons["childSetup.continue"].isEnabled)
+        app.navigationBars.buttons.firstMatch.tap()
+        waitFor(app.buttons["mode.parent"])
+        app.buttons["mode.parent"].tap()
+        waitFor(app.buttons["welcome.getStarted"])
+    }
+
+    @MainActor
+    func testHandingDownThisDeviceSwitchesToChildMode() throws {
+        let app = launch(arguments: ["-setupComplete"])
+        waitFor(app.buttons["dashboard.manageProtection"])
+        app.tabBars.buttons["Settings"].tap()
+        tapScrolling(app.buttons["settings.setUpChildDevice"], in: app)
+
+        // Choose the child, confirm the hand-off, keep the suggested name, pair through the mock device API.
+        waitFor(app.staticTexts["Mia"])
+        app.staticTexts["Mia"].tap()
+        app.buttons["handDown.continue"].tap()
+        waitFor(app.buttons["handDown.confirm"])
+        app.buttons["handDown.confirm"].tap()
+        waitFor(app.textFields["handDown.name"])
+        app.buttons["handDown.pair"].tap()
+
+        // The install is now the child's: the parent session is gone and setup continues at permissions.
+        // The seeded mock already has Screen Time approved, so Continue is available straight away.
+        waitFor(app.buttons["childSetup.permissionsContinue"], timeout: 15)
+        XCTAssertTrue(app.buttons["childSetup.permissionsContinue"].isEnabled)
+        app.buttons["childSetup.permissionsContinue"].tap()
+        waitFor(app.buttons["childSetup.finish"])
+        app.buttons["childSetup.finish"].tap()
+        waitFor(app.buttons["childSetup.done"])
+        app.buttons["childSetup.done"].tap()
+        waitFor(element("childHome.syncCard", in: app))
+        waitFor(app.buttons["childHome.askApp"])
+        XCTAssertFalse(app.tabBars.buttons["Settings"].exists)
+    }
+
+    @MainActor
     func testTabsAndSettingsMenuAreReachable() throws {
         let app = launch(arguments: ["-setupComplete"])
         waitFor(app.buttons["dashboard.manageProtection"])

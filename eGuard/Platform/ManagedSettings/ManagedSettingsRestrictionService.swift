@@ -57,6 +57,26 @@ final class ManagedSettingsRestrictionService: RestrictionService {
             : .specific(resolved.categoryTokens)
     }
 
+    func applyMaximumAppRating(age: Int?) throws {
+        store.appStore.maximumRating = age.map { RatingTiers.rating(forAge: $0, in: RatingTiers.appStore) }
+    }
+
+    func applyContentRating(age: Int?) throws {
+        guard let age else {
+            store.media.maximumMovieRating = nil
+            store.media.maximumTVShowRating = nil
+            store.media.denyExplicitContent = nil
+            return
+        }
+        store.media.maximumMovieRating = RatingTiers.rating(forAge: age, in: RatingTiers.movies)
+        store.media.maximumTVShowRating = RatingTiers.rating(forAge: age, in: RatingTiers.tv)
+        store.media.denyExplicitContent = age < 18 ? true : nil
+    }
+
+    func applyAppRemoval(deny: Bool) throws {
+        store.application.denyAppRemoval = deny ? true : nil
+    }
+
     func clearAllRestrictions() {
         store.clearAllSettings()
         ManagedSettingsStore(named: EGuardShared.Store.downtime).clearAllSettings()
@@ -71,6 +91,9 @@ final class ManagedSettingsRestrictionService: RestrictionService {
         snapshot.denyAppInstallation = store.application.denyAppInstallation
         snapshot.denyExplicitContent = store.media.denyExplicitContent
         snapshot.requirePasswordForPurchases = store.appStore.requirePasswordForPurchases
+        snapshot.denyAppRemoval = store.application.denyAppRemoval
+        snapshot.maximumAppRatingAge = store.appStore.maximumRating.flatMap { RatingTiers.age(forRating: $0, in: RatingTiers.appStore) }
+        snapshot.contentRatingAge = store.media.maximumMovieRating.flatMap { RatingTiers.age(forRating: $0, in: RatingTiers.movies) }
         snapshot.shieldedApplicationCount = store.shield.applications?.count ?? 0
         if let categories = store.shield.applicationCategories {
             snapshot.isApplicationCategoryShieldActive = categories != .none
@@ -122,6 +145,23 @@ final class MockRestrictionService: RestrictionService {
         try failIfNeeded()
         state.shieldedWebDomainCount = selection.webDomainCount
         state.isWebDomainCategoryShieldActive = selection.categoryCount > 0
+    }
+
+    func applyMaximumAppRating(age: Int?) throws {
+        try failIfNeeded()
+        // Round-trip through Apple's rating values exactly like the live service.
+        state.maximumAppRatingAge = age.flatMap { RatingTiers.age(forRating: RatingTiers.rating(forAge: $0, in: RatingTiers.appStore), in: RatingTiers.appStore) }
+    }
+
+    func applyContentRating(age: Int?) throws {
+        try failIfNeeded()
+        state.contentRatingAge = age.flatMap { RatingTiers.age(forRating: RatingTiers.rating(forAge: $0, in: RatingTiers.movies), in: RatingTiers.movies) }
+        state.denyExplicitContent = age.map { $0 < 18 ? true : nil } ?? nil
+    }
+
+    func applyAppRemoval(deny: Bool) throws {
+        try failIfNeeded()
+        state.denyAppRemoval = deny ? true : nil
     }
 
     func clearAllRestrictions() {

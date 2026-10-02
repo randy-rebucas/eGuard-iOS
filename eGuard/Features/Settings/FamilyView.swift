@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Settings › Family, from `GET /family`, with parent management for the admin.
+/// Settings › Family, from `GET /family`. The admin invites parents by email; they join once they accept.
 struct FamilyView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
@@ -8,10 +8,10 @@ struct FamilyView: View {
     @State private var isAddingParent = false
     @State private var parentName = ""
     @State private var parentEmail = ""
-    @State private var parentPassword = ""
     @State private var memberToRemove: FamilyMember?
     @State private var message: String?
     @State private var errorMessage: String?
+    @State private var isSending = false
 
     var body: some View {
         EGuardScreen {
@@ -21,25 +21,51 @@ struct FamilyView: View {
             case .failed(let error):
                 ErrorCard(message: error) { Task { await loadFamily() } }
             case .loaded(let family):
-                ScreenHeader(title: family.name, subtitle: "\(family.deviceCount) of \(family.deviceLimit) devices · \(family.timezone)")
+                ScreenHeader(title: family.name, subtitle: subtitle(family))
+
+                if let plan = family.plan {
+                    EGuardCard {
+                        HStack {
+                            IconTile(symbolName: "rosette", tint: EGuardColors.tileYellow)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(plan).font(EGuardTypography.label)
+                                Text(usageLine(family))
+                                    .font(EGuardTypography.caption)
+                                    .foregroundStyle(EGuardColors.textSecondary)
+                            }
+                            Spacer()
+                            Button("View") { router.push(.subscription) }
+                                .font(EGuardTypography.label)
+                                .foregroundStyle(EGuardColors.primary)
+                        }
+                    }
+                }
 
                 VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
-                    SectionHeader(title: "Parents", actionTitle: family.canManage ? "Add" : nil) { isAddingParent = true }
+                    SectionHeader(title: "Parents", actionTitle: family.canManage ? "Invite" : nil) { isAddingParent = true }
                     EGuardCard {
                         ForEach(family.members) { member in
                             HStack(spacing: EGuardSpacing.sm) {
                                 AvatarView(name: member.name, size: 40, tint: member.role == .familyAdmin ? EGuardColors.primary : EGuardColors.tileTeal)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(member.you ? "\(member.name) (you)" : member.name).font(EGuardTypography.label)
-                                    Text("\(member.email) · \(member.role.title)")
+                                    Text("\(member.email) · \(member.isPending ? "Invitation sent" : member.role.title)")
                                         .font(EGuardTypography.caption)
                                         .foregroundStyle(EGuardColors.textSecondary)
                                 }
                                 Spacer()
+                                if member.isPending { StatusPill(text: "Pending", tint: EGuardColors.warning) }
                                 if family.canManage, !member.you, member.role == .parent {
-                                    Button("Remove") { memberToRemove = member }
-                                        .font(EGuardTypography.label)
-                                        .foregroundStyle(EGuardColors.danger)
+                                    Menu {
+                                        if member.isPending {
+                                            Button("Resend invitation", systemImage: "envelope") { Task { await resend(member) } }
+                                        }
+                                        Button(member.isPending ? "Withdraw invitation" : "Remove", systemImage: "trash", role: .destructive) { memberToRemove = member }
+                                    } label: {
+                                        Image(systemName: "ellipsis.circle")
+                                            .foregroundStyle(EGuardColors.neutral)
+                                    }
+                                    .accessibilityLabel("Options for \(member.name)")
                                 }
                             }
                             .padding(.vertical, EGuardSpacing.xxs)
@@ -71,7 +97,7 @@ struct FamilyView: View {
                 InlineError(message: errorMessage)
 
                 if !family.canManage {
-                    Text("Only the family admin can add or remove parents.")
+                    Text("Only the family admin can invite or remove parents.")
                         .font(EGuardTypography.caption)
                         .foregroundStyle(EGuardColors.textSecondary)
                 }
@@ -83,32 +109,43 @@ struct FamilyView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadFamily() }
         .sheet(isPresented: $isAddingParent) { addParentSheet }
-        .confirmationDialog("Remove \(memberToRemove?.name ?? "parent")?", isPresented: Binding(get: { memberToRemove != nil }, set: { if !$0 { memberToRemove = nil } }), titleVisibility: .visible) {
-            Button("Remove", role: .destructive) { Task { await removeMember() } }
+        .confirmationDialog(memberToRemove?.isPending == true ? "Withdraw the invitation to \(memberToRemove?.name ?? "this parent")?" : "Remove \(memberToRemove?.name ?? "parent")?", isPresented: Binding(get: { memberToRemove != nil }, set: { if !$0 { memberToRemove = nil } }), titleVisibility: .visible) {
+            Button(memberToRemove?.isPending == true ? "Withdraw" : "Remove", role: .destructive) { Task { await removeMember() } }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("They are signed out everywhere and lose access to the family.")
+            Text(memberToRemove?.isPending == true ? "Their invitation link stops working." : "They are signed out everywhere and lose access to the family.")
         }
+    }
+
+    private func subtitle(_ family: Family) -> String {
+        "\(family.slotsUsed) of \(family.deviceLimit) devices · \(family.timezone)"
+    }
+
+    private func usageLine(_ family: Family) -> String {
+        var parts = ["\(family.slotsUsed) of \(family.deviceLimit) devices"]
+        if let childLimit = family.childLimit {
+            parts.append("\(family.childCount ?? family.children.count) of \(childLimit) children")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var addParentSheet: some View {
         NavigationStack {
             EGuardScreen {
-                ScreenHeader(title: "Add a parent", subtitle: "Share the temporary password with them so they can sign in and change it.")
+                ScreenHeader(title: "Invite a parent", subtitle: "We email them an invitation. They choose their own password when they accept, and the link works for 7 days.")
                 VStack(spacing: EGuardSpacing.sm) {
                     EGuardTextField(label: "Full name", placeholder: "Ana Cruz", text: $parentName, symbolName: "person", contentType: .name, autocapitalization: .words)
                     EGuardTextField(label: "Email address", placeholder: "ana@example.com", text: $parentEmail, symbolName: "envelope", contentType: .emailAddress, keyboard: .emailAddress)
-                    EGuardTextField(label: "Temporary password", placeholder: "At least 10 characters", text: $parentPassword, symbolName: "lock", isSecure: true)
                 }
                 InlineError(message: errorMessage)
             } actions: {
-                Button("Add Parent") { Task { await addParent() } }
+                Button(isSending ? "Sending…" : "Send Invitation") { Task { await invite() } }
                     .buttonStyle(.eGuardPrimary)
-                    .disabled(AccountValidator.validateName(parentName) != nil || AccountValidator.validateEmail(parentEmail) != nil || AccountValidator.validatePassword(parentPassword) != nil)
+                    .disabled(AccountValidator.validateName(parentName) != nil || AccountValidator.validateEmail(parentEmail) != nil || isSending)
                 Button("Cancel") { isAddingParent = false }
                     .buttonStyle(.eGuardText)
             }
-            .navigationTitle("Add parent")
+            .navigationTitle("Invite parent")
             .navigationBarTitleDisplayMode(.inline)
         }
     }
@@ -118,14 +155,30 @@ struct FamilyView: View {
         state = await load { try await model.api.family() }
     }
 
-    private func addParent() async {
+    private func invite() async {
+        isSending = true
+        defer { isSending = false }
         do {
-            let member = try await model.api.addMember(name: parentName, email: parentEmail, password: parentPassword)
-            message = "\(member.name) can now sign in with the temporary password."
+            let sent = try await model.api.inviteMember(name: parentName, email: parentEmail)
+            if sent.emailSent == false {
+                message = "\(sent.name) was added, but the email didn't go out. Use Resend invitation."
+            } else {
+                message = "We emailed \(sent.email) an invitation. It works for \(sent.expiresInDays ?? 7) days."
+            }
             errorMessage = nil
             isAddingParent = false
-            parentName = ""; parentEmail = ""; parentPassword = ""
+            parentName = ""; parentEmail = ""
             await loadFamily()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func resend(_ member: FamilyMember) async {
+        do {
+            try await model.api.resendInvitation(memberId: member.id)
+            message = "We sent \(member.name) a new invitation link."
+            errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -135,7 +188,7 @@ struct FamilyView: View {
         guard let member = memberToRemove else { return }
         do {
             try await model.api.removeMember(id: member.id)
-            message = "\(member.name) was removed."
+            message = member.isPending ? "The invitation to \(member.name) was withdrawn." : "\(member.name) was removed."
             await loadFamily()
         } catch {
             errorMessage = error.localizedDescription

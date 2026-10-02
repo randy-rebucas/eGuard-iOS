@@ -9,6 +9,8 @@ final class LiveEGuardAPI: EGuardAPIService {
     }
 
     private struct Empty: Encodable {}
+    private struct TokenBody: Encodable { let token: String }
+    private struct CodeBody: Encodable { let code: String }
 
     private func query(_ items: [(String, String?)]) -> [URLQueryItem] {
         items.compactMap { name, value in value.map { URLQueryItem(name: name, value: $0) } }
@@ -42,17 +44,49 @@ final class LiveEGuardAPI: EGuardAPIService {
         )
     }
 
-    func login(email: String, password: String) async throws -> AuthResponse {
+    func login(email: String, password: String) async throws -> LoginResult {
         struct Body: Encodable { let email: String; let password: String }
-        return try await client.send(.json(.post, "auth/login", body: Body(email: email, password: password), requiresAuth: false), as: AuthResponse.self)
+        return try await client.send(.json(.post, "auth/login", body: Body(email: email, password: password), requiresAuth: false), as: LoginResult.self)
     }
 
-    func social(provider: SocialProvider, idToken: String, name: String?, guardian: Bool) async throws -> AuthResponse {
-        struct Body: Encodable { let provider: SocialProvider; let idToken: String; let name: String?; let guardian: Bool? }
+    func social(provider: SocialProvider, idToken: String, name: String?, guardian: Bool, nonce: String?) async throws -> LoginResult {
+        struct Body: Encodable { let provider: SocialProvider; let idToken: String; let name: String?; let guardian: Bool?; let nonce: String? }
         return try await client.send(
-            .json(.post, "auth/social", body: Body(provider: provider, idToken: idToken, name: name, guardian: guardian ? true : nil), requiresAuth: false),
-            as: AuthResponse.self
+            .json(.post, "auth/social", body: Body(provider: provider, idToken: idToken, name: name, guardian: guardian ? true : nil, nonce: nonce), requiresAuth: false),
+            as: LoginResult.self
         )
+    }
+
+    func twoFactor(challenge: String, code: String) async throws -> AuthResponse {
+        struct Body: Encodable { let challenge: String; let code: String }
+        return try await client.send(.json(.post, "auth/two-factor", body: Body(challenge: challenge, code: code), requiresAuth: false), as: AuthResponse.self)
+    }
+
+    func forgotPassword(email: String) async throws -> OKResponse {
+        struct Body: Encodable { let email: String }
+        return try await client.send(.json(.post, "auth/forgot-password", body: Body(email: email), requiresAuth: false), as: OKResponse.self)
+    }
+
+    func resetPassword(token: String, password: String) async throws -> LoginResult {
+        struct Body: Encodable { let token: String; let password: String }
+        return try await client.send(.json(.post, "auth/reset-password", body: Body(token: token, password: password), requiresAuth: false), as: LoginResult.self)
+    }
+
+    func verifyEmail(token: String) async throws {
+        try await client.send(.json(.post, "auth/verify-email", body: TokenBody(token: token), requiresAuth: false))
+    }
+
+    func invitation(token: String) async throws -> InvitationPreview {
+        try await client.send(.get("auth/invite", query: [URLQueryItem(name: "token", value: token)], requiresAuth: false), as: InvitationPreview.self)
+    }
+
+    func acceptInvitation(token: String, password: String) async throws -> AuthResponse {
+        struct Body: Encodable { let token: String; let password: String }
+        return try await client.send(.json(.post, "auth/accept-invite", body: Body(token: token, password: password), requiresAuth: false), as: AuthResponse.self)
+    }
+
+    func declineInvitation(token: String) async throws -> InvitationDeclined {
+        try await client.send(.json(.post, "auth/decline-invite", body: TokenBody(token: token), requiresAuth: false), as: InvitationDeclined.self)
     }
 
     func logout(pushToken: String?) async throws {
@@ -65,9 +99,26 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.get("me"), as: APIUser.self)
     }
 
-    func updateMe(name: String?, email: String?, timezone: String?) async throws -> APIUser {
-        struct Body: Encodable { let name: String?; let email: String?; let timezone: String? }
-        return try await client.send(.json(.patch, "me", body: Body(name: name, email: email, timezone: timezone)), as: APIUser.self)
+    func updateMe(name: String?, email: String?, password: String?, timezone: String?) async throws -> APIUser {
+        struct Body: Encodable { let name: String?; let email: String?; let password: String?; let timezone: String? }
+        return try await client.send(.json(.patch, "me", body: Body(name: name, email: email, password: password, timezone: timezone)), as: APIUser.self)
+    }
+
+    func deleteAccount(confirmation: DeletionConfirmation) async throws -> AccountDeleted {
+        try await client.send(.json(.delete, "me", body: confirmation), as: AccountDeleted.self)
+    }
+
+    func exportData() async throws -> Data {
+        try await client.sendData(APIRequest(method: .post, path: "me/export"))
+    }
+
+    func identities() async throws -> [LinkedIdentity] {
+        struct Response: Decodable { let identities: [LinkedIdentity] }
+        return try await client.send(.get("me/identities"), as: Response.self).identities
+    }
+
+    func deleteIdentity(id: String) async throws {
+        try await client.send(.empty(.delete, "me/identities/\(id)"))
     }
 
     func changePassword(current: String, next: String) async throws -> OKResponse {
@@ -93,8 +144,7 @@ final class LiveEGuardAPI: EGuardAPIService {
     }
 
     func deletePushToken(_ token: String) async throws {
-        struct Body: Encodable { let token: String }
-        try await client.send(.json(.delete, "me/push-tokens", body: Body(token: token)))
+        try await client.send(.json(.delete, "me/push-tokens", body: TokenBody(token: token)))
     }
 
     func sessions() async throws -> [SessionInfo] {
@@ -105,6 +155,26 @@ final class LiveEGuardAPI: EGuardAPIService {
     func signOutOtherSessions() async throws -> Int {
         struct Response: Decodable { let signedOut: Int }
         return try await client.send(.empty(.delete, "me/sessions"), as: Response.self).signedOut
+    }
+
+    func twoFactorStatus() async throws -> TwoFactorStatus {
+        try await client.send(.get("me/two-factor"), as: TwoFactorStatus.self)
+    }
+
+    func setupTwoFactor() async throws -> TwoFactorSetup {
+        try await client.send(.empty(.post, "me/two-factor/setup"), as: TwoFactorSetup.self)
+    }
+
+    func confirmTwoFactor(code: String) async throws -> [String] {
+        try await client.send(.json(.post, "me/two-factor/confirm", body: CodeBody(code: code)), as: RecoveryCodes.self).recoveryCodes
+    }
+
+    func regenerateRecoveryCodes(code: String) async throws -> [String] {
+        try await client.send(.json(.post, "me/two-factor/recovery-codes", body: CodeBody(code: code)), as: RecoveryCodes.self).recoveryCodes
+    }
+
+    func disableTwoFactor(code: String) async throws -> TwoFactorStatus {
+        try await client.send(.json(.delete, "me/two-factor", body: CodeBody(code: code)), as: TwoFactorStatus.self)
     }
 
     // MARK: Dashboard and health
@@ -135,6 +205,11 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.empty(.post, "children/\(childId)/pairing-code"), as: PairingCode.self)
     }
 
+    func browserPairingCode(childId: String, deviceLabel: String) async throws -> PairingCode {
+        struct Body: Encodable { let kind = "BROWSER"; let deviceLabel: String }
+        return try await client.send(.json(.post, "children/\(childId)/pairing-code", body: Body(deviceLabel: deviceLabel)), as: PairingCode.self)
+    }
+
     // MARK: Children
 
     func children() async throws -> [ChildSummary] {
@@ -156,9 +231,8 @@ final class LiveEGuardAPI: EGuardAPIService {
         return try await client.send(.json(.patch, "children/\(id)", body: Body(name: name, age: age)), as: ChildDetail.self)
     }
 
-    func deleteChild(id: String, password: String) async throws {
-        struct Body: Encodable { let password: String }
-        try await client.send(.json(.delete, "children/\(id)", body: Body(password: password)))
+    func deleteChild(id: String, confirmation: DeletionConfirmation) async throws {
+        try await client.send(.json(.delete, "children/\(id)", body: confirmation))
     }
 
     func uploadPhoto(childId: String, data: Data, contentType: String) async throws -> String {
@@ -260,7 +334,7 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.empty(.post, "alerts/\(id)/dismiss"))
     }
 
-    // MARK: Devices and checks
+    // MARK: Devices, browsers and checks
 
     func devices() async throws -> DevicesResponse {
         try await client.send(.get("devices"), as: DevicesResponse.self)
@@ -275,8 +349,32 @@ final class LiveEGuardAPI: EGuardAPIService {
         return try await client.send(.json(.patch, "devices/\(id)", body: Body(name: name)), as: DeviceDetail.self)
     }
 
-    func unpairDevice(id: String) async throws {
-        try await client.send(.empty(.delete, "devices/\(id)"))
+    func unpairDevice(id: String, confirmation: DeletionConfirmation) async throws {
+        try await client.send(.json(.delete, "devices/\(id)", body: confirmation))
+    }
+
+    func browsers() async throws -> [ConnectedBrowser] {
+        try await client.send(.get("browsers"), as: BrowsersResponse.self).browsers
+    }
+
+    func removeBrowser(id: String, confirmation: DeletionConfirmation) async throws {
+        try await client.send(.json(.delete, "browsers/\(id)", body: confirmation))
+    }
+
+    func browserPolicy(childId: String) async throws -> BrowserPolicy {
+        try await client.send(.get("children/\(childId)/browser-policy"), as: BrowserPolicy.self)
+    }
+
+    func updateBrowserPolicy(childId: String, policy: BrowserPolicyUpdate) async throws -> BrowserPolicy {
+        try await client.send(.json(.put, "children/\(childId)/browser-policy", body: policy), as: BrowserPolicy.self)
+    }
+
+    func browserAccessRequests(childId: String) async throws -> BrowserAccessRequests {
+        try await client.send(.get("children/\(childId)/browser-access-requests"), as: BrowserAccessRequests.self)
+    }
+
+    func decideBrowserAccessRequest(id: String, decision: BrowserAccessDecision) async throws -> BrowserAccessRequest {
+        try await client.send(.json(.post, "browser-access-requests/\(id)", body: decision), as: BrowserAccessDecided.self).request
     }
 
     func startCheck(deviceId: String?) async throws -> String {
@@ -288,16 +386,18 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.get("checks/\(runId)"), as: CheckRun.self)
     }
 
-    // MARK: Family and privacy
+    // MARK: Family, organizations and privacy
 
     func family() async throws -> Family {
         try await client.send(.get("family"), as: Family.self)
     }
 
-    func addMember(name: String, email: String, password: String) async throws -> FamilyMember {
-        struct Response: Decodable { let id: String; let name: String; let email: String; let role: UserRole }
-        let response = try await client.send(.json(.post, "family/members", body: NewMember(name: name, email: email, password: password)), as: Response.self)
-        return FamilyMember(id: response.id, name: response.name, email: response.email, role: response.role, createdAt: .now, you: false)
+    func inviteMember(name: String, email: String) async throws -> InvitationSent {
+        try await client.send(.json(.post, "family/members", body: NewMember(name: name, email: email)), as: InvitationSent.self)
+    }
+
+    func resendInvitation(memberId: String) async throws {
+        try await client.send(.empty(.post, "family/members/\(memberId)/invite"))
     }
 
     func removeMember(id: String) async throws {
@@ -310,6 +410,22 @@ final class LiveEGuardAPI: EGuardAPIService {
 
     func updatePrivacy(_ patch: PrivacyPatch) async throws -> PrivacySettings {
         try await client.send(.json(.patch, "family/privacy", body: patch), as: PrivacySettings.self)
+    }
+
+    func organizations() async throws -> OrganizationsResponse {
+        try await client.send(.get("organizations"), as: OrganizationsResponse.self)
+    }
+
+    func previewOrganization(code: String) async throws -> OrganizationPreview {
+        try await client.send(.json(.post, "organizations/preview", body: CodeBody(code: code)), as: OrganizationPreview.self)
+    }
+
+    func joinOrganization(code: String) async throws -> OrganizationJoined {
+        try await client.send(.json(.post, "organizations", body: CodeBody(code: code)), as: OrganizationJoined.self)
+    }
+
+    func leaveOrganization(id: String) async throws -> OrganizationLeft {
+        try await client.send(.empty(.delete, "organizations/\(id)"), as: OrganizationLeft.self)
     }
 
     // MARK: Subscription and support

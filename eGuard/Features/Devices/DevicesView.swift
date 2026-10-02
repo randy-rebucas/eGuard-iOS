@@ -1,12 +1,16 @@
 import SwiftUI
 
-/// Devices tab, from `GET /devices`.
+/// Devices tab, from `GET /devices` and `GET /browsers`.
 struct DevicesView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
     @State private var state: LoadState<DevicesResponse> = .loading
+    @State private var browsers: [ConnectedBrowser] = []
     @State private var isChecking = false
     @State private var checkResult: CheckRun?
+    @State private var checkError: String?
+    @State private var browserToRemove: ConnectedBrowser?
+    @State private var browserError: String?
 
     var body: some View {
         TabScreen {
@@ -29,9 +33,12 @@ struct DevicesView: View {
                 ErrorCard(message: message) { Task { await loadDevices() } }
             case .loaded(let response):
                 if let limit = response.limit {
-                    Text("\(response.devices.count) of \(limit) devices on your plan")
+                    Text("\(response.devices.count + browsers.count) of \(limit) device slots on your plan")
                         .font(EGuardTypography.label)
                         .foregroundStyle(EGuardColors.textSecondary)
+                }
+                if let checkError {
+                    ErrorCard(message: checkError)
                 }
                 if let checkResult {
                     checkCard(checkResult)
@@ -42,20 +49,34 @@ struct DevicesView: View {
                 ForEach(response.devices) { device in
                     deviceCard(device)
                 }
+                if !browsers.isEmpty {
+                    browsersSection
+                }
             }
         }
         .refreshable { await loadDevices() }
         .task { await loadDevices() }
+        .deletionConfirmation(
+            "Remove \(browserToRemove?.deviceLabel ?? "this browser")?",
+            message: "The eGuard extension forgets the connection on its next check, and the family gets a \"Browser removed\" alert.",
+            confirmTitle: "Remove",
+            isPresented: Binding(get: { browserToRemove != nil }, set: { if !$0 { browserToRemove = nil } }),
+            user: model.user
+        ) { confirmation in
+            Task { await removeBrowser(confirmation) }
+        }
     }
 
     private func loadDevices() async {
         if state.value == nil { state = .loading }
         state = await load { try await model.api.devices() }
+        browsers = (try? await model.api.browsers()) ?? []
     }
 
     /// Asks every device for a fresh report and shows who answered.
     private func runCheck() async {
         isChecking = true
+        checkError = nil
         defer { isChecking = false }
         do {
             let runId = try await model.api.startCheck(deviceId: nil)
@@ -66,7 +87,7 @@ struct DevicesView: View {
                 try? await Task.sleep(for: BatchPoller.interval)
             } while Date.now.timeIntervalSince(started) < 15
         } catch {
-            state = .failed(error.localizedDescription)
+            checkError = error.localizedDescription
         }
         await loadDevices()
         await model.refreshDashboard()
@@ -87,6 +108,14 @@ struct DevicesView: View {
                         ProgressView()
                     }
                 }
+            }
+            if run.done {
+                // A full score with offline devices is their last known state, never "verified".
+                Text(run.health.isVerified
+                     ? "Every protection is verified on every device."
+                     : (run.health.score >= run.health.total && run.health.total > 0 ? "Every protection is set, as last reported." : "\(run.health.text) protections passing.") + (run.health.offlineNote.map { " \($0)" } ?? ""))
+                    .font(EGuardTypography.caption)
+                    .foregroundStyle(EGuardColors.textSecondary)
             }
         }
     }
@@ -122,6 +151,54 @@ struct DevicesView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("devices.device.\(device.id)")
+    }
+
+    /// Browser extensions take plan slots but never enforce a policy, so they're never shown as protected.
+    private var browsersSection: some View {
+        VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
+            SectionHeader(title: "Browsers")
+            EGuardCard {
+                ForEach(browsers) { browser in
+                    HStack(spacing: EGuardSpacing.sm) {
+                        IconTile(symbolName: "globe", tint: browser.connected ? EGuardColors.tileTeal : EGuardColors.danger)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(browser.deviceLabel).font(EGuardTypography.label)
+                            Text([browser.childName, browser.detail.isEmpty ? nil : browser.detail, browser.lastSeenAt.map { "Seen \($0.relativeDescription())" }].compactMap { $0 }.joined(separator: " · "))
+                                .font(EGuardTypography.caption)
+                                .foregroundStyle(EGuardColors.textSecondary)
+                            if !browser.connected {
+                                Text("Disconnected for security. Remove it and add it again.")
+                                    .font(EGuardTypography.caption)
+                                    .foregroundStyle(EGuardColors.danger)
+                            }
+                        }
+                        Spacer()
+                        Menu {
+                            Button("Website rules", systemImage: "list.bullet.rectangle") { router.push(.browserPolicy(childId: browser.childId)) }
+                            Button("Remove", systemImage: "trash", role: .destructive) { browserToRemove = browser }
+                        } label: {
+                            Image(systemName: "ellipsis.circle").foregroundStyle(EGuardColors.neutral)
+                        }
+                        .accessibilityLabel("Options for \(browser.deviceLabel)")
+                    }
+                    .padding(.vertical, EGuardSpacing.xxs)
+                    if browser.id != browsers.last?.id { Divider() }
+                }
+                InlineError(message: browserError)
+            }
+        }
+    }
+
+    private func removeBrowser(_ confirmation: DeletionConfirmation) async {
+        guard let browser = browserToRemove else { return }
+        do {
+            try await model.api.removeBrowser(id: browser.id, confirmation: confirmation)
+            browserError = nil
+            await loadDevices()
+        } catch {
+            browserError = error.localizedDescription
+        }
+        browserToRemove = nil
     }
 
     private func tint(_ state: DeviceState) -> Color {
@@ -170,6 +247,11 @@ struct DeviceDetailView: View {
                     EGuardValueRow(label: "eGuard version", value: detail.appVersion ?? "Unknown")
                     EGuardValueRow(label: "Last seen", value: detail.lastSeenLabel ?? "Never")
                     if let battery = detail.battery { EGuardValueRow(label: "Battery", value: "\(battery)%") }
+                    if detail.state == .offline {
+                        Text("This device hasn't synced in over a day. Its protections show their last known state until it reconnects.")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.warning)
+                    }
                 }
 
                 EGuardCard {
@@ -198,8 +280,9 @@ struct DeviceDetailView: View {
                     isRenaming = true
                 }
                 .buttonStyle(.eGuardSecondary)
-                Button("Unpair Device", role: .destructive) { isConfirmingUnpair = true }
+                Button("Remove Device", role: .destructive) { isConfirmingUnpair = true }
                     .buttonStyle(.eGuardText)
+                    .accessibilityIdentifier("device.remove")
             }
         }
         .navigationTitle(state.value?.name ?? "Device")
@@ -210,11 +293,14 @@ struct DeviceDetailView: View {
             Button("Save") { Task { await rename() } }
             Button("Cancel", role: .cancel) {}
         }
-        .confirmationDialog("Unpair this device?", isPresented: $isConfirmingUnpair, titleVisibility: .visible) {
-            Button("Unpair", role: .destructive) { Task { await unpair() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("eGuard stops managing the device and its token stops working. Protections already applied stay until changed on the device.")
+        .deletionConfirmation(
+            "Remove this device?",
+            message: "eGuard stops managing it and its token stops working. The device clears its protections at its next check-in, and the family gets a \"Device removed\" alert.",
+            confirmTitle: "Remove",
+            isPresented: $isConfirmingUnpair,
+            user: model.user
+        ) { confirmation in
+            Task { await unpair(confirmation) }
         }
     }
 
@@ -232,9 +318,9 @@ struct DeviceDetailView: View {
         }
     }
 
-    private func unpair() async {
+    private func unpair(_ confirmation: DeletionConfirmation) async {
         do {
-            try await model.api.unpairDevice(id: deviceId)
+            try await model.api.unpairDevice(id: deviceId, confirmation: confirmation)
             await model.refreshDashboard()
             router.pop()
         } catch {

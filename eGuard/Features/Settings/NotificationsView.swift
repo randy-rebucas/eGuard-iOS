@@ -53,7 +53,9 @@ struct NotificationsView: View {
             }
             InlineError(message: errorMessage)
 
-            Text("Push delivery is being rolled out on the eGuard server. Alerts always appear in the Alerts tab.")
+            Text(PushService.isAvailable
+                 ? "Alerts that need attention are pushed to this iPhone within a few minutes. They always appear in the Alerts tab too."
+                 : "Push delivery isn't set up in this build yet. Alerts always appear in the Alerts tab.")
                 .font(EGuardTypography.caption)
                 .foregroundStyle(EGuardColors.textSecondary)
         } actions: {

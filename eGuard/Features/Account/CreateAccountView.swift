@@ -47,6 +47,12 @@ final class CreateAccountViewModel {
         }
     }
 
+    /// A two-step challenge from Apple sign-in on an account that has it on.
+    var twoFactorChallenge: TwoFactorChallenge?
+    /// Fresh for every Apple request; its hash goes in the request, the raw value to the server.
+    var appleNonce = AppleNonce()
+
+    /// Continue with Apple. The guardian checkbox on this form is the confirmation a new account needs.
     func handleApple(_ result: Result<ASAuthorization, Error>, model: AppModel) async -> Bool {
         switch result {
         case .success(let authorization):
@@ -61,8 +67,16 @@ final class CreateAccountViewModel {
             do {
                 isSubmitting = true
                 defer { isSubmitting = false }
-                try await model.signInWithApple(identityToken: token, fullName: name)
-                return true
+                switch try await model.signInWithApple(identityToken: token, fullName: name, nonce: appleNonce, guardianConfirmed: isGuardian) {
+                case .signedIn:
+                    return true
+                case .twoFactorRequired(let challenge):
+                    twoFactorChallenge = challenge
+                    return false
+                }
+            } catch let error as APIError where error.code == "guardian_required" {
+                errorMessage = AccountError.guardianRequired.localizedDescription
+                return false
             } catch {
                 errorMessage = error.localizedDescription
                 return false
@@ -152,11 +166,17 @@ struct CreateAccountView: View {
             VStack(spacing: EGuardSpacing.sm) {
                 if signInOptions.apple {
                     SignInWithAppleButton(.continue) { request in
+                        viewModel.appleNonce = AppleNonce()
                         request.requestedScopes = [.fullName, .email]
+                        request.nonce = viewModel.appleNonce.hashed
                     } onCompletion: { result in
                         Task {
                             if await viewModel.handleApple(result, model: model) {
-                                router.push(.addChild)
+                                // An existing family lands on the dashboard; a new one adds its first child.
+                                if model.hasChildren { router.popToRoot() } else { router.push(.addChild) }
+                            } else if let challenge = viewModel.twoFactorChallenge {
+                                viewModel.twoFactorChallenge = nil
+                                router.push(.twoFactorCode(challenge))
                             }
                         }
                     }

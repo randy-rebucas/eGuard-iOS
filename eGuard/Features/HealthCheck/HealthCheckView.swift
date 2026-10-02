@@ -94,6 +94,9 @@ struct HealthCheckView: View {
                 if run.done { break }
                 try? await Task.sleep(for: BatchPoller.interval)
             }
+        } catch let error as APIError where error.code == "no_devices" {
+            state = .failed("Pair a device first. There's nothing to check until one is connected.")
+            return
         } catch {
             state = .failed(error.localizedDescription)
             return
@@ -125,6 +128,18 @@ struct HealthCheckView: View {
             }
             .accessibilityLabel("Health score \(score.text). \(score.grade)")
             .accessibilityIdentifier("health.score")
+
+            if let note = score.offlineNote {
+                // Offline devices are scored by their last known state, which isn't a verification.
+                Label(note, systemImage: "wifi.exclamationmark")
+                    .font(EGuardTypography.caption)
+                    .foregroundStyle(EGuardColors.warning)
+                    .multilineTextAlignment(.center)
+            } else if score.isVerified {
+                Label("Verified on every device", systemImage: "checkmark.seal.fill")
+                    .font(EGuardTypography.caption)
+                    .foregroundStyle(EGuardColors.success)
+            }
 
             Text("The score measures configuration, not your child's behavior. Unsupported settings never count against it.")
                 .font(EGuardTypography.caption)

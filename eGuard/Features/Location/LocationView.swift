@@ -18,13 +18,24 @@ struct LocationView: View {
             case .loading:
                 LoadingCard()
             case .failed(let message):
-                ErrorCard(message: message) { Task { await loadLocation() } }
+                if isPlanLocked {
+                    EGuardCard {
+                        EmptyStateView(symbolName: "lock.fill", title: "Not on your plan", message: message, tint: EGuardColors.neutral)
+                    }
+                } else {
+                    ErrorCard(message: message) { Task { await loadLocation() } }
+                }
             case .loaded(let response):
                 sharingCard(response)
-                if response.sharing {
+                switch response.locationState {
+                case .located, .waiting:
                     mapCard(response)
                     visitsCard(response)
-                } else {
+                case .noDevices:
+                    EGuardCard {
+                        EmptyStateView(symbolName: "iphone.slash", title: "No devices yet", message: "Pair a device to see where it is.", tint: EGuardColors.neutral)
+                    }
+                case .sharingOff, .planRequired:
                     EGuardCard {
                         EmptyStateView(
                             symbolName: "location.slash",
@@ -36,11 +47,13 @@ struct LocationView: View {
                 }
             }
         } actions: {
-            Button(state.value?.sharing == true ? "Change Location Sharing" : "Turn On Location Sharing") {
-                router.push(.protectionEditor(childId: childId, key: "LOCATION"))
+            if !isPlanLocked {
+                Button(state.value?.sharing == true ? "Change Location Sharing" : "Turn On Location Sharing") {
+                    router.push(.protectionEditor(childId: childId, key: "LOCATION"))
+                }
+                .buttonStyle(.eGuardPrimary)
+                .accessibilityIdentifier("location.toggle")
             }
-            .buttonStyle(.eGuardPrimary)
-            .accessibilityIdentifier("location.toggle")
         }
         .navigationTitle("Location")
         .navigationBarTitleDisplayMode(.inline)
@@ -51,11 +64,22 @@ struct LocationView: View {
         }
     }
 
+    @State private var isPlanLocked = false
+
     private func loadLocation() async {
         if state.value == nil { state = .loading }
-        state = await load { try await model.api.location(childId: childId) }
+        isPlanLocked = false
+        do {
+            state = .loaded(try await model.api.location(childId: childId))
+        } catch let error as APIError where error.code == "plan_required" {
+            isPlanLocked = true
+            state = .failed(error.localizedDescription)
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
         if let current = state.value?.current {
-            position = .region(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: current.lat, longitude: current.lng), latitudinalMeters: 1200, longitudinalMeters: 1200))
+            let span = max(current.accuracyM ?? 0, 300) * 4
+            position = .region(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: current.lat, longitude: current.lng), latitudinalMeters: span, longitudinalMeters: span))
         }
     }
 
@@ -65,7 +89,7 @@ struct LocationView: View {
                 IconTile(symbolName: response.sharing ? "checkmark" : "location.slash", tint: response.sharing ? EGuardColors.success : EGuardColors.neutral, filled: response.sharing)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Location sharing").font(EGuardTypography.label)
-                    Text(response.sharing ? "Enabled" : "Off")
+                    Text(response.locationState.title)
                         .font(EGuardTypography.caption)
                         .foregroundStyle(response.sharing ? EGuardColors.success : EGuardColors.textSecondary)
                 }
@@ -84,14 +108,16 @@ struct LocationView: View {
             Map(position: $position) {
                 if let current = response.current {
                     let coordinate = CLLocationCoordinate2D(latitude: current.lat, longitude: current.lng)
+                    let tint = current.isFresh ? EGuardColors.primary : EGuardColors.neutral
                     Annotation(current.deviceName, coordinate: coordinate) {
                         Image(systemName: "figure.child.circle.fill")
                             .font(.title)
-                            .foregroundStyle(.white, EGuardColors.primary)
+                            .foregroundStyle(.white, tint)
                     }
+                    // An approximate fix (over 200 m) draws its accuracy circle so it isn't read as exact.
                     MapCircle(center: coordinate, radius: current.accuracyM ?? 250)
-                        .foregroundStyle(EGuardColors.primary.opacity(0.15))
-                        .stroke(EGuardColors.primary.opacity(0.4), lineWidth: 1)
+                        .foregroundStyle(tint.opacity(current.isApproximate ? 0.2 : 0.12))
+                        .stroke(tint.opacity(0.4), lineWidth: 1)
                 }
             }
             .mapStyle(.standard(pointsOfInterest: .excludingAll))
@@ -108,9 +134,17 @@ struct LocationView: View {
             .accessibilityLabel("Map of the device's current location")
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(response.current?.placeLabel.map { "Near \($0)" } ?? "Locating…")
-                    .font(EGuardTypography.label)
-                Text(response.current?.updatedLabel ?? "No location yet")
+                HStack(spacing: EGuardSpacing.xs) {
+                    Text(response.current?.placeLabel.map { "Near \($0)" } ?? "Locating…")
+                        .font(EGuardTypography.label)
+                    if let current = response.current, current.isApproximate {
+                        StatusPill(text: "Approximate", tint: EGuardColors.warning)
+                    }
+                    if let current = response.current, current.isFresh {
+                        StatusPill(text: "Live", tint: EGuardColors.success)
+                    }
+                }
+                Text(response.current?.freshnessLabel ?? "No location yet")
                     .font(EGuardTypography.caption)
                     .foregroundStyle(EGuardColors.textSecondary)
             }

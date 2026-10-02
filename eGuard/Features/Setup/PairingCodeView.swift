@@ -10,16 +10,37 @@ struct PairingCodeView: View {
     @State private var state: LoadState<PairingCode> = .loading
     @State private var isPaired = false
     @State private var secondsLeft = 15 * 60
+    @State private var kind: CodeKind = .device
+    @State private var browserLabel = ""
+
+    /// Phone-app codes and browser-extension codes are different and never interchangeable.
+    private enum CodeKind: String, CaseIterable, Hashable {
+        case device, browser
+        var title: String { self == .device ? "Phone or tablet" : "Browser extension" }
+    }
 
     var body: some View {
         NavigationStack {
             EGuardScreen {
                 ScreenHeader(
-                    title: "Pair your child's device",
-                    subtitle: "Install eGuard on the child's device, open it, and enter this code."
+                    title: kind == .device ? "Pair your child's device" : "Add a browser",
+                    subtitle: kind == .device
+                        ? "Install eGuard on the child's device, open it, choose \"This is my child's device\" and enter this code."
+                        : "Install the eGuard browser extension on the child's computer and enter this code on its setup page."
                 )
 
+                PillSegmentedControl(options: CodeKind.allCases, selection: $kind) { $0.title }
+
+                if kind == .browser, state.value?.isBrowserCode != true {
+                    EGuardTextField(label: "Computer or browser name", placeholder: "Mia's MacBook", text: $browserLabel, symbolName: "laptopcomputer", autocapitalization: .words)
+                    Button("Create browser code") { Task { await requestCode() } }
+                        .buttonStyle(.eGuardSecondary)
+                        .disabled(browserLabel.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+
                 switch state {
+                case .loading where kind == .browser:
+                    EmptyView()
                 case .loading:
                     LoadingCard(message: "Creating a code…")
                 case .failed(let message):
@@ -27,7 +48,7 @@ struct PairingCodeView: View {
                     if message.contains("Verify") || message.contains("verify") {
                         VerifyEmailBanner()
                     }
-                case .loaded(let code):
+                case .loaded(let code) where code.isBrowserCode == (kind == .browser):
                     EGuardCard {
                         Text(spaced(code.code))
                             .font(.system(size: 40, weight: .bold, design: .monospaced))
@@ -51,30 +72,43 @@ struct PairingCodeView: View {
                                 .foregroundStyle(EGuardColors.textSecondary)
                         }
                         .accessibilityIdentifier("pairing.paired")
-                    } else {
+                    } else if kind == .device {
                         HStack(spacing: EGuardSpacing.xs) {
                             ProgressView()
                             Text("Waiting for the device…")
                                 .font(EGuardTypography.caption)
                                 .foregroundStyle(EGuardColors.textSecondary)
                         }
+                    } else {
+                        Text("Connected browsers appear on the Devices tab. They count toward your plan's device slots.")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
+                case .loaded:
+                    EmptyView()
+                }
+
+                if kind == .device {
+                    EGuardCard {
+                        SectionHeader(title: "On the child's device")
+                        EGuardNavRow(title: "iPhone or iPad", subtitle: "Family Sharing and Screen Time", symbolName: "iphone") {
+                            router.push(.helpArticle(slug: "ios-family-sharing"))
+                            dismiss()
+                        }
+                        Divider()
+                        EGuardNavRow(title: "Android", subtitle: "Family Link and device admin", symbolName: "smartphone", tint: EGuardColors.success) {
+                            router.push(.helpArticle(slug: "android-family-link"))
+                            dismiss()
+                        }
+                        Divider()
+                        EGuardNavRow(title: "This phone or tablet", subtitle: "Hand this device down: Settings › Set up this device for a child", symbolName: "arrow.triangle.swap", tint: EGuardColors.tilePurple) {
+                            router.push(.setUpChildDevice)
+                            dismiss()
+                        }
                     }
                 }
 
-                EGuardCard {
-                    SectionHeader(title: "On the child's device")
-                    EGuardNavRow(title: "iPhone or iPad", subtitle: "Family Sharing and Screen Time", symbolName: "iphone") {
-                        router.push(.helpArticle(slug: "ios-family-sharing"))
-                        dismiss()
-                    }
-                    Divider()
-                    EGuardNavRow(title: "Android", subtitle: "Family Link and device admin", symbolName: "smartphone", tint: EGuardColors.success) {
-                        router.push(.helpArticle(slug: "android-family-link"))
-                        dismiss()
-                    }
-                }
-
-                if let mock = model.api as? MockEGuardAPI {
+                if kind == .device, let mock = model.api as? MockEGuardAPI {
                     Button("Simulate device pairing (test server)") {
                         mock.simulatePairing(childId: childId)
                     }
@@ -91,6 +125,10 @@ struct PairingCodeView: View {
         }
         .task { await requestCode() }
         .task { await pollForDevice() }
+        .onChange(of: kind) { _, newKind in
+            // Switching kinds asks for the matching code; a browser code needs a label first.
+            if newKind == .device { Task { await requestCode() } } else { state = .loading }
+        }
     }
 
     private func spaced(_ code: String) -> String {
@@ -101,7 +139,12 @@ struct PairingCodeView: View {
 
     private func requestCode() async {
         state = .loading
-        state = await load { try await model.api.pairingCode(childId: childId) }
+        let label = browserLabel.trimmingCharacters(in: .whitespaces)
+        state = await load {
+            kind == .browser
+                ? try await model.api.browserPairingCode(childId: childId, deviceLabel: label)
+                : try await model.api.pairingCode(childId: childId)
+        }
         if let code = state.value {
             secondsLeft = max(0, Int(code.expiresAt.timeIntervalSinceNow))
         }

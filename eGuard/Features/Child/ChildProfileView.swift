@@ -18,7 +18,6 @@ struct ChildProfileView: View {
     @State private var history: LoadState<HistoryPage> = .loading
     @State private var section: Section = .overview
     @State private var isConfirmingDelete = false
-    @State private var deletePassword = ""
     @State private var deleteError: String?
 
     var body: some View {
@@ -71,12 +70,13 @@ struct ChildProfileView: View {
                 history = await load { try await model.api.history(childId: childId, before: nil) }
             }
         }
-        .alert("Delete \(state.value?.child.name ?? "child")?", isPresented: $isConfirmingDelete) {
-            SecureField("Your password", text: $deletePassword)
-            Button("Delete", role: .destructive) { Task { await deleteChild() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This permanently deletes the child, their devices, and all their data. Enter your password to confirm.")
+        .deletionConfirmation(
+            "Delete \(state.value?.child.name ?? "child")?",
+            message: "This permanently deletes the child, their devices, and all their data.",
+            isPresented: $isConfirmingDelete,
+            user: model.user
+        ) { confirmation in
+            Task { await deleteChild(confirmation) }
         }
         .alert("Couldn't delete", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -90,15 +90,14 @@ struct ChildProfileView: View {
         state = await load { try await model.api.child(id: childId) }
     }
 
-    private func deleteChild() async {
+    private func deleteChild(_ confirmation: DeletionConfirmation) async {
         do {
-            try await model.api.deleteChild(id: childId, password: deletePassword)
+            try await model.api.deleteChild(id: childId, confirmation: confirmation)
             await model.refreshDashboard()
             router.popToRoot()
         } catch {
             deleteError = error.localizedDescription
         }
-        deletePassword = ""
     }
 
     // MARK: Header
@@ -167,9 +166,15 @@ struct ChildProfileView: View {
                     router.push(.location(childId: childId))
                 }
                 Divider()
-                EGuardNavRow(title: "Device protection", subtitle: "\(detail.deviceProtection.label) · \(detail.health.healthScore.text)", symbolName: "checkmark.shield.fill", tint: statusTint(detail.child.status)) {
+                EGuardNavRow(title: "Device protection", subtitle: "\(detail.deviceProtection.label) · \(detail.health.healthScore.text)\(detail.health.healthScore.isVerified ? " verified" : (detail.health.healthScore.offlineCount > 0 ? " last known" : ""))", symbolName: "checkmark.shield.fill", tint: statusTint(detail.child.status)) {
                     router.push(.healthCheck(childId: childId, isOnboarding: false))
                 }
+            }
+
+            if detail.location.locationState == .planRequired {
+                Text("Location sharing isn't included in your plan.")
+                    .font(EGuardTypography.caption)
+                    .foregroundStyle(EGuardColors.textSecondary)
             }
 
             if !detail.devices.isEmpty {

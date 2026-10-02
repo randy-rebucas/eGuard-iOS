@@ -93,7 +93,11 @@ struct SettingsView: View {
                 router.push(.privacy)
             }
             Divider()
-            EGuardNavRow(title: "Account", subtitle: "Profile, password, sessions", symbolName: "person.crop.circle.fill", tint: EGuardColors.primary) {
+            EGuardNavRow(title: "Organizations", subtitle: "Schools and groups your family joined", symbolName: "building.2.fill", tint: EGuardColors.tileTeal) {
+                router.push(.organizations)
+            }
+            Divider()
+            EGuardNavRow(title: "Account", subtitle: "Profile, password, two-step verification", symbolName: "person.crop.circle.fill", tint: EGuardColors.primary) {
                 router.push(.account)
             }
             Divider()
@@ -107,6 +111,21 @@ struct SettingsView: View {
             Divider()
             EGuardNavRow(title: "About eGuard", subtitle: version, symbolName: "info.circle.fill", tint: EGuardColors.tileGray) {
                 router.push(.about)
+            }
+        }
+
+        // Hidden when the family has no children: there's nobody to hand the device to yet.
+        if model.hasChildren {
+            EGuardCard {
+                EGuardNavRow(
+                    title: "Set up this device for a child",
+                    subtitle: "Hand down this phone or tablet. You'll be signed out here and it becomes your child's device.",
+                    symbolName: "arrow.triangle.swap",
+                    tint: EGuardColors.tilePurple
+                ) {
+                    router.push(.setUpChildDevice)
+                }
+                .accessibilityIdentifier("settings.setUpChildDevice")
             }
         }
 

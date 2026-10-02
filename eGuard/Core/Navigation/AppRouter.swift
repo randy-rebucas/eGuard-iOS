@@ -3,9 +3,18 @@ import Observation
 
 /// Every destination reachable from the root NavigationStack.
 nonisolated enum AppRoute: Hashable, Sendable {
-    // Account
+    // Choosing a side and signing in
+    case welcome
+    case childSetup
     case createAccount
     case signIn
+    case forgotPassword
+    case twoFactorCode(TwoFactorChallenge)
+
+    // Links from eGuard emails
+    case resetPassword(token: String)
+    case verifyEmailLink(token: String)
+    case acceptInvite(token: String)
 
     // Onboarding
     case addChild
@@ -26,6 +35,7 @@ nonisolated enum AppRoute: Hashable, Sendable {
     case appsManagement(childId: String)
     case location(childId: String)
     case deviceDetail(deviceId: String)
+    case browserPolicy(childId: String)
 
     // App sections
     case alerts
@@ -33,7 +43,12 @@ nonisolated enum AppRoute: Hashable, Sendable {
     case account
     case changePassword
     case sessions
+    case twoFactor
+    case linkedSignIns
+    case deleteAccount
     case family
+    case organizations
+    case setUpChildDevice
     case notifications
     case privacy
     case about
@@ -120,6 +135,16 @@ final class AppRouter {
             push(.subscription)
         default:
             break
+        }
+    }
+
+    /// Opens a link from an eGuard email on the parent side.
+    func open(_ link: DeepLink) {
+        popToRoot()
+        switch link {
+        case .verifyEmail(let token): push(.verifyEmailLink(token: token))
+        case .resetPassword(let token): push(.resetPassword(token: token))
+        case .acceptInvite(let token): push(.acceptInvite(token: token))
         }
     }
 }

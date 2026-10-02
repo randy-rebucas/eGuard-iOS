@@ -19,7 +19,14 @@ struct ScreenTimeView: View {
                 case .loading:
                     LoadingCard()
                 case .failed(let message):
-                    ErrorCard(message: message) { Task { await loadReport() } }
+                    if isPlanLocked {
+                        // 30-day reports need the plan's advanced reports. Neutral wording: no upgrade prompt on iOS.
+                        EGuardCard {
+                            EmptyStateView(symbolName: "lock.fill", title: "Not included in your plan", message: message, tint: EGuardColors.neutral)
+                        }
+                    } else {
+                        ErrorCard(message: message) { Task { await loadReport() } }
+                    }
                 case .loaded(let report):
                     ring(report)
                     if let hourly = report.hourly, hourly.contains(where: { $0 > 0 }) {
@@ -38,9 +45,19 @@ struct ScreenTimeView: View {
         .task(id: period) { await loadReport() }
     }
 
+    @State private var isPlanLocked = false
+
     private func loadReport() async {
         state = .loading
-        state = await load { try await model.api.screenTime(childId: childId, period: period) }
+        isPlanLocked = false
+        do {
+            state = .loaded(try await model.api.screenTime(childId: childId, period: period))
+        } catch let error as APIError where error.code == "plan_required" {
+            isPlanLocked = true
+            state = .failed(error.localizedDescription)
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
     }
 
     private func ring(_ report: ScreenTimeReport) -> some View {
@@ -110,6 +127,11 @@ struct ScreenTimeView: View {
             if report.apps.isEmpty {
                 Text("No app activity in this period.")
                     .font(EGuardTypography.callout)
+                    .foregroundStyle(EGuardColors.textSecondary)
+            }
+            if report.hiddenAppCount > 0 {
+                Text("\(report.hiddenAppCount) more app\(report.hiddenAppCount == 1 ? "" : "s") aren't named on your plan and are counted in Others.")
+                    .font(EGuardTypography.caption)
                     .foregroundStyle(EGuardColors.textSecondary)
             }
             let top = report.apps.first?.minutes ?? 1

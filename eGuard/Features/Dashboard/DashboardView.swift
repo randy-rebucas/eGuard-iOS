@@ -63,7 +63,7 @@ struct DashboardView: View {
 
     private func familyProtectionCard(_ dashboard: Dashboard) -> some View {
         let health = dashboard.health
-        let tint: Color = health.score >= health.total ? EGuardColors.success : (health.score >= 5 ? EGuardColors.tileYellow : EGuardColors.danger)
+        let tint: Color = health.total == 0 ? EGuardColors.neutral : (health.isVerified ? EGuardColors.success : (health.score >= 5 ? EGuardColors.tileYellow : EGuardColors.danger))
         return EGuardCard {
             Button {
                 router.push(.healthCheck(childId: nil, isOnboarding: false))
@@ -81,6 +81,11 @@ struct DashboardView: View {
                         Text(health.grade)
                             .font(EGuardTypography.label)
                             .foregroundStyle(tint)
+                        if let note = health.offlineNote {
+                            Text(note)
+                                .font(EGuardTypography.caption)
+                                .foregroundStyle(EGuardColors.textSecondary)
+                        }
                     }
                     Spacer()
                     Image(systemName: "chevron.right")

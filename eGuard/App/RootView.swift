@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Hosts the splash, the update gate, and the single NavigationStack.
-/// A signed-in parent with at least one child starts in the tabbed app; everyone else starts at Welcome.
+/// Hosts the splash, the update gate, and routes on the install's mode: the "Who's using this device?"
+/// chooser, the parent's NavigationStack, or the child device screens.
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
@@ -21,12 +21,16 @@ struct RootView: View {
                 SplashView()
                     .transition(.opacity)
                     .zIndex(1)
+            } else if model.mode == .child {
+                ChildDeviceRootView()
+                    .transition(.opacity)
             } else {
                 navigationStack
                     .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.45), value: isShowingSplash)
+        .animation(.easeInOut(duration: 0.45), value: model.mode)
         .task {
             async let bootstrap: Void = model.bootstrap()
             if !model.skipsSplash {
@@ -34,12 +38,16 @@ struct RootView: View {
             }
             splashElapsed = true
             await bootstrap
+            handlePendingDeepLink()
+            await handlePendingPushAlert()
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active, model.bootstrapState == .ready, model.isSignedIn else { return }
-            // Alerts resolve and devices report while the app is in the background, so refresh on return.
-            Task {
-                await model.refreshDashboard()
+            guard phase == .active, model.bootstrapState == .ready else { return }
+            if model.mode == .child {
+                Task { await model.childDevice.syncNow() }
+            } else if model.isSignedIn {
+                // Alerts resolve and devices report while the app is in the background, so refresh on return.
+                Task { await model.refreshDashboard() }
             }
         }
         .onChange(of: model.isSignedIn) { _, isSignedIn in
@@ -47,12 +55,27 @@ struct RootView: View {
             guard !isSignedIn else { return }
             router.show(.home)
         }
+        .onChange(of: model.pendingDeepLink) { _, _ in handlePendingDeepLink() }
+        .onChange(of: model.pendingPushAlert) { _, _ in Task { await handlePendingPushAlert() } }
+    }
+
+    /// A tapped alert push opens the Alerts tab (or the child's app requests when the alert is about apps).
+    private func handlePendingPushAlert() async {
+        guard model.bootstrapState == .ready, let alert = await model.consumePushAlert() else { return }
+        if alert.category == "APPS", let childId = alert.childId {
+            router.popToRoot()
+            router.push(.appsManagement(childId: childId))
+        } else {
+            router.show(.alerts)
+        }
     }
 
     private var navigationStack: some View {
         NavigationStack(path: $router.path) {
             Group {
-                if model.isSetupComplete {
+                if model.mode == .unset {
+                    ModeChooserView()
+                } else if model.isSetupComplete {
                     MainTabView()
                 } else {
                     WelcomeView()
@@ -66,11 +89,29 @@ struct RootView: View {
         .tint(EGuardColors.primary)
     }
 
+    /// Email links are for parents. On a child's device the app says so instead of handling them.
+    private func handlePendingDeepLink() {
+        guard model.bootstrapState == .ready, let link = model.pendingDeepLink else { return }
+        model.pendingDeepLink = nil
+        if model.mode == .child {
+            model.childDevice.deepLinkNotice = "Open this link on your parent's phone or at eguard.family."
+        } else {
+            router.open(link)
+        }
+    }
+
     @ViewBuilder
     private func destination(for route: AppRoute) -> some View {
         switch route {
+        case .welcome: WelcomeView()
+        case .childSetup: ChildSetupView(startStep: .code)
         case .createAccount: CreateAccountView()
         case .signIn: SignInView()
+        case .forgotPassword: ForgotPasswordView()
+        case .twoFactorCode(let challenge): TwoFactorCodeView(challenge: challenge)
+        case .resetPassword(let token): ResetPasswordView(token: token)
+        case .verifyEmailLink(let token): VerifyEmailLinkView(token: token)
+        case .acceptInvite(let token): AcceptInviteView(token: token)
         case .addChild: AddChildView(childId: nil)
         case .editChild(let childId): AddChildView(childId: childId)
         case .protectionProfile(let childId): ProtectionProfileView(childId: childId)
@@ -85,12 +126,18 @@ struct RootView: View {
         case .appsManagement(let childId): AppsManagementView(childId: childId)
         case .location(let childId): LocationView(childId: childId)
         case .deviceDetail(let deviceId): DeviceDetailView(deviceId: deviceId)
+        case .browserPolicy(let childId): BrowserPolicyView(childId: childId)
         case .alerts: AlertsView(isRoot: false)
         case .settings: SettingsView(isRoot: false)
         case .account: AccountView()
         case .changePassword: ChangePasswordView()
         case .sessions: SessionsView()
+        case .twoFactor: TwoFactorView()
+        case .linkedSignIns: LinkedSignInsView()
+        case .deleteAccount: DeleteAccountView()
         case .family: FamilyView()
+        case .organizations: OrganizationsView()
+        case .setUpChildDevice: HandDownDeviceView()
         case .notifications: NotificationsView()
         case .privacy: PrivacyView()
         case .about: AboutView()
@@ -102,7 +149,7 @@ struct RootView: View {
     }
 }
 
-/// Shown when the server's minimum app version is newer than this build.
+/// Shown when the server's minimum app version is newer than this build. Used by both modes.
 struct UpdateRequiredView: View {
     let minimumVersion: String
     @Environment(\.openURL) private var openURL
@@ -126,6 +173,11 @@ struct UpdateRequiredView: View {
             .padding(EGuardSpacing.xl)
         }
     }
+}
+
+#Preview("Mode chooser") {
+    RootView()
+        .environment(AppModel.mock(mode: .unset))
 }
 
 #Preview("Onboarding") {

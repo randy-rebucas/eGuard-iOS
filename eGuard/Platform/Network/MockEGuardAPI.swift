@@ -6,8 +6,18 @@ import Foundation
 final class MockEGuardAPI: EGuardAPIService {
     private struct Account {
         var user: APIUser
-        var password: String
+        /// Nil for Apple/Google accounts that never set a password.
+        var password: String?
+        var twoFactorSecret: String?
+        var twoFactorEnabled = false
+        var recoveryCodes: [String] = []
+        var identities: [LinkedIdentity] = []
     }
+
+    /// The code the mock's authenticator "shows". Tests use it to pass two-step verification.
+    static let authenticatorCode = "123456"
+    /// One-time tokens the mock "emails": password resets, email verification, invitations.
+    private enum LinkKind { case reset(email: String), verify(email: String), invite(memberId: String) }
 
     // MARK: State
 
@@ -25,7 +35,19 @@ final class MockEGuardAPI: EGuardAPIService {
     private var privacySettings = PrivacySettings(keepLocationHistory: true, shareAnalytics: false, retentionDays: 90)
     private var ticketsList: [SupportTicket] = []
     private var pushTokens: Set<String> = []
+    private var challenges: [String: String] = [:]
+    private var links: [String: LinkKind] = [:]
+    private var browsersList: [ConnectedBrowser] = []
+    private var browserRequests: [BrowserAccessRequest] = []
+    private var browserPolicies: [String: BrowserPolicy] = [:]
+    private var organizationsList: [Organization] = []
+    private var browserRequestChild: [String: String] = [:]
     private var sequence = 0
+
+    /// The plan the mock family is on. Tests flip entitlements to exercise plan gating.
+    var entitlements = PlanEntitlements(childLimit: 5, deviceLimit: 10, locationSharing: true, appMonitoringLimit: nil, realtimeAlerts: true, advancedReports: false, apiAccess: false)
+    /// The last one-time link the mock "emailed", so tests can open it.
+    private(set) var lastLinkToken: String?
 
     /// Overrides for tests.
     var appInfoValue = AppInfo(
@@ -65,6 +87,11 @@ final class MockEGuardAPI: EGuardAPIService {
     /// The session a seeded mock accepts. `AppModel.make` stores it for `-setupComplete`.
     static let seededSession = APISession(token: "mock-token", expiresAt: Date.now.addingTimeInterval(30 * 86400))
 
+    /// Signs Randy back in on the server side, for tests that look at the parent's view after a child-device action.
+    func loginForTests() {
+        currentUser = accounts["randy@example.com"]?.user
+    }
+
     private init() {}
 
     // MARK: Seeding
@@ -79,13 +106,14 @@ final class MockEGuardAPI: EGuardAPIService {
             id: "usr_randy", name: "Randy Cruz", firstName: "Randy", email: "randy@example.com",
             role: .familyAdmin, family: family,
             notifications: NotificationPrefs(notifyPush: true, notifyEmail: true, notifyApproval: true, weeklySummary: true),
-            twoFactor: false, emailVerified: true, createdAt: Date.now.addingTimeInterval(-40 * 86400)
+            twoFactor: false, hasPassword: true, emailVerified: true, createdAt: Date.now.addingTimeInterval(-40 * 86400)
         )
         accounts[user.email] = Account(user: user, password: "ChangeMe123!")
         members = [
-            FamilyMember(id: user.id, name: user.name, email: user.email, role: .familyAdmin, createdAt: user.createdAt, you: true),
-            FamilyMember(id: "usr_ana", name: "Ana Cruz", email: "ana@example.com", role: .parent, createdAt: Date.now.addingTimeInterval(-30 * 86400), you: false),
+            FamilyMember(id: user.id, name: user.name, email: user.email, role: .familyAdmin, createdAt: user.createdAt, you: true, pending: false),
+            FamilyMember(id: "usr_ana", name: "Ana Cruz", email: "ana@example.com", role: .parent, createdAt: Date.now.addingTimeInterval(-30 * 86400), you: false, pending: false),
         ]
+        organizationsList = [Organization(id: "org_1", name: "Baybay Central School", kind: "SCHOOL", kindLabel: "School", joinedAt: Date.now.addingTimeInterval(-20 * 86400))]
     }
 
     private func seedFamily() {
@@ -116,6 +144,16 @@ final class MockEGuardAPI: EGuardAPIService {
         ]
         appsByChild[lucas.id] = [app("Roblox", .allowed, limit: 60, today: 35), app("YouTube Kids", .alwaysAllowed, limit: nil, today: 20)]
         appsByChild[sophie.id] = [app("Instagram", .allowed, limit: 90, today: 61), app("Spotify", .alwaysAllowed, limit: nil, today: 40)]
+        // Snapchat is blocked, and Mia asked for it again: it stays blocked with `requested: true`.
+        if let index = appsByChild[mia.id]?.firstIndex(where: { $0.name == "Snapchat" }) { appsByChild[mia.id]?[index].requested = true }
+
+        browsersList = [
+            ConnectedBrowser(id: nextID("browser"), childId: sophie.id, childName: "Sophie", deviceLabel: "Sophie's MacBook", browser: "Chrome", browserVersion: "130", extensionVersion: "1.2.0", platform: "macOS", lastSeenAt: Date.now.addingTimeInterval(-1800), connected: true, createdAt: Date.now.addingTimeInterval(-10 * 86400)),
+        ]
+        browserRequests = [
+            BrowserAccessRequest(id: nextID("webreq"), domain: "discord.com", reason: "For my school group chat", status: "PENDING", duration: nil, expiresAt: nil, createdAt: Date.now.addingTimeInterval(-3600), decidedAt: nil, decidedBy: nil),
+        ]
+        browserRequestChild[browserRequests[0].id] = sophie.id
 
         alertsList = [
             makeAlert(childId: sophie.id, deviceId: sophiePhone.id, severity: .attention, category: .protection, icon: "moon",
@@ -170,11 +208,14 @@ final class MockEGuardAPI: EGuardAPIService {
         // Every protection now has a device entry with the platform's capability.
         protectionsByChild[childId] = (protectionsByChild[childId] ?? []).map { protection in
             var copy = protection
+            let capability = Self.capability(key: protection.key, platform: platform)
+            // A device that can't apply a protection is "Not supported" there, whatever the siblings do.
             copy.devices.append(ProtectionDevice(
                 deviceId: device.id, deviceName: device.name, platform: platform,
-                capability: Self.capability(key: protection.key, platform: platform),
-                status: .notConfigured, reported: nil, reportedLabel: "Not configured",
-                message: "Not configured on \(device.name)", lastVerifiedAt: nil, guide: nil
+                capability: capability,
+                status: capability == .unsupported ? .unsupported : .notConfigured, reported: nil,
+                reportedLabel: capability == .unsupported ? "Not supported" : "Not configured",
+                message: capability == .unsupported ? "Not supported on \(device.name)" : "Not configured on \(device.name)", lastVerifiedAt: nil, guide: nil
             ))
             // A protection no paired device can apply never counts against health.
             if copy.isUnsupportedEverywhere {
@@ -262,7 +303,8 @@ final class MockEGuardAPI: EGuardAPIService {
         summary.dailyLimitMinutes = screenTime?["dailyMinutes"]?.intValue
         summary.weekendLimitMinutes = screenTime?["weekendMinutes"]?.intValue
         summary.todayLimitMinutes = Calendar.current.isDateInWeekend(.now) ? summary.weekendLimitMinutes : summary.dailyLimitMinutes
-        summary.todayMinutes = devices.isEmpty ? 0 : 134
+        // A device that reported usage wins over the seeded sample.
+        summary.todayMinutes = reportedUsage[childId] ?? (devices.isEmpty ? 0 : 134)
         summaries[index] = summary
         devicesByChild[childId] = devices.map { device in
             var copy = device
@@ -276,7 +318,9 @@ final class MockEGuardAPI: EGuardAPIService {
         let protections = protectionsByChild[childId] ?? []
         let evaluated = protections.filter { $0.status != .unsupported }
         let passed = evaluated.filter { $0.status == .pass }.count
-        var score = HealthScore(score: passed, total: evaluated.count, label: nil)
+        let offline = (devicesByChild[childId] ?? []).filter { $0.state == .offline }.count
+        let total = (devicesByChild[childId] ?? []).isEmpty ? 0 : evaluated.count
+        var score = HealthScore(score: passed, total: total, label: nil, offline: offline, verified: total > 0 && passed == total && offline == 0)
         score.label = score.grade
         return score
     }
@@ -365,6 +409,33 @@ final class MockEGuardAPI: EGuardAPIService {
 
     // MARK: Auth
 
+    private func session(for user: APIUser, isNew: Bool) -> AuthResponse {
+        AuthResponse(token: "mock-token-\(user.id)", expiresAt: Date.now.addingTimeInterval(30 * 86400), user: user, isNew: isNew)
+    }
+
+    /// Signs the account in, or hands back a two-step challenge when the account has it on.
+    private func finishSignIn(_ account: Account, isNew: Bool) -> LoginResult {
+        if account.twoFactorEnabled {
+            let challenge = nextID("challenge")
+            challenges[challenge] = account.user.email
+            return .twoFactorRequired(TwoFactorChallenge(challenge: challenge, expiresAt: Date.now.addingTimeInterval(600), isNew: isNew))
+        }
+        currentUser = account.user
+        return .signedIn(session(for: account.user, isNew: isNew))
+    }
+
+    private func issueLink(_ kind: LinkKind) -> String {
+        let token = nextID("link")
+        links[token] = kind
+        lastLinkToken = token
+        return token
+    }
+
+    private func saveAccount(_ account: Account) {
+        accounts[account.user.email] = account
+        if currentUser?.id == account.user.id { currentUser = account.user }
+    }
+
     func register(name: String, email: String, password: String, familyName: String?) async throws -> AuthResponse {
         try gate()
         let normalized = AccountValidator.normalizedEmail(email)
@@ -377,41 +448,135 @@ final class MockEGuardAPI: EGuardAPIService {
             id: nextID("usr"), name: trimmed, firstName: first, email: normalized, role: .familyAdmin,
             family: FamilyRef(id: nextID("fam"), name: familyName ?? "\(first)'s Family", timezone: TimeZone.current.identifier),
             notifications: NotificationPrefs(notifyPush: true, notifyEmail: true, notifyApproval: true, weeklySummary: false),
-            twoFactor: false, emailVerified: false, createdAt: .now
+            twoFactor: false, hasPassword: true, emailVerified: false, createdAt: .now
         )
         accounts[normalized] = Account(user: user, password: password)
+        _ = issueLink(.verify(email: normalized))
         currentUser = user
-        members = [FamilyMember(id: user.id, name: user.name, email: user.email, role: .familyAdmin, createdAt: .now, you: true)]
+        members = [FamilyMember(id: user.id, name: user.name, email: user.email, role: .familyAdmin, createdAt: .now, you: true, pending: false)]
         summaries = []
         alertsList = []
-        return AuthResponse(token: "mock-token-\(user.id)", expiresAt: Date.now.addingTimeInterval(30 * 86400), user: user, isNew: true)
+        organizationsList = []
+        browsersList = []
+        return session(for: user, isNew: true)
     }
 
-    func login(email: String, password: String) async throws -> AuthResponse {
+    func login(email: String, password: String) async throws -> LoginResult {
         try gate()
-        guard let account = accounts[AccountValidator.normalizedEmail(email)], account.password == password else {
+        guard let account = accounts[AccountValidator.normalizedEmail(email)], let stored = account.password, stored == password else {
             throw APIError.server(status: 401, code: "invalid_credentials", message: "That email and password don't match an eGuard account.")
         }
-        currentUser = account.user
-        return AuthResponse(token: "mock-token-\(account.user.id)", expiresAt: Date.now.addingTimeInterval(30 * 86400), user: account.user, isNew: false)
+        return finishSignIn(account, isNew: false)
     }
 
-    func social(provider: SocialProvider, idToken: String, name: String?, guardian: Bool) async throws -> AuthResponse {
+    /// Set to true to behave like a server that doesn't know the `nonce` field yet.
+    var rejectsNonce = false
+    private(set) var lastSocialNonce: String?
+
+    func social(provider: SocialProvider, idToken: String, name: String?, guardian: Bool, nonce: String?) async throws -> LoginResult {
         try gate()
         guard appInfoValue.signIn.apple || provider != .apple else {
             throw APIError.server(status: 501, code: "provider_not_configured", message: "Apple sign-in isn't enabled on this server.")
         }
+        if rejectsNonce, nonce != nil {
+            throw APIError.server(status: 400, code: "invalid", message: "nonce: Unknown field.")
+        }
+        lastSocialNonce = nonce
         let email = "\(provider.rawValue)-\(idToken.prefix(6).lowercased())@privaterelay.example"
         if let account = accounts[email] {
-            currentUser = account.user
-            return AuthResponse(token: "mock-token-\(account.user.id)", expiresAt: Date.now.addingTimeInterval(30 * 86400), user: account.user, isNew: false)
+            return finishSignIn(account, isNew: false)
         }
         guard guardian else { throw APIError.server(status: 400, code: "guardian_required", message: "Confirm you're a parent or legal guardian, 18 or older.") }
-        var response = try await register(name: name?.isEmpty == false ? name! : "Parent", email: email, password: UUID().uuidString, familyName: nil)
-        response.user.emailVerified = true
-        accounts[email]?.user.emailVerified = true
-        currentUser = response.user
+        let response = try await register(name: name?.isEmpty == false ? name! : "Parent", email: email, password: UUID().uuidString, familyName: nil)
+        // Social accounts have no password and count as verified.
+        guard var account = accounts[email] else { throw APIError.notSignedIn }
+        account.password = nil
+        account.user.hasPassword = false
+        account.user.emailVerified = true
+        account.identities = [LinkedIdentity(id: nextID("identity"), provider: provider.rawValue, email: email, createdAt: .now)]
+        saveAccount(account)
+        return .signedIn(AuthResponse(token: response.token, expiresAt: response.expiresAt, user: account.user, isNew: true))
+    }
+
+    func twoFactor(challenge: String, code: String) async throws -> AuthResponse {
+        try gate()
+        guard let email = challenges[challenge], var account = accounts[email] else {
+            throw APIError.server(status: 401, code: "challenge_expired", message: "That sign-in expired. Start again.")
+        }
+        var response = session(for: account.user, isNew: false)
+        if code == Self.authenticatorCode {
+            // Fine.
+        } else if let index = account.recoveryCodes.firstIndex(of: code) {
+            account.recoveryCodes.remove(at: index)
+            saveAccount(account)
+            response.usedRecoveryCode = true
+            response.recoveryCodesLeft = account.recoveryCodes.count
+        } else {
+            throw APIError.server(status: 400, code: "wrong_code", message: "That code isn't right. Try again.")
+        }
+        challenges[challenge] = nil
+        currentUser = account.user
         return response
+    }
+
+    func forgotPassword(email: String) async throws -> OKResponse {
+        try gate()
+        let normalized = AccountValidator.normalizedEmail(email)
+        if accounts[normalized] != nil { _ = issueLink(.reset(email: normalized)) }
+        return OKResponse(ok: true, message: "If an eGuard account uses \(normalized), we've emailed a link to set a new password.")
+    }
+
+    func resetPassword(token: String, password: String) async throws -> LoginResult {
+        try gate()
+        guard password.count >= 10 else { throw APIError.server(status: 400, code: "invalid", message: "password: Use at least 10 characters.") }
+        guard case .reset(let email)? = links.removeValue(forKey: token), var account = accounts[email] else {
+            throw APIError.server(status: 400, code: "link_invalid", message: "This link was already used or isn't valid. Ask for a new one.")
+        }
+        account.password = password
+        account.user.hasPassword = true
+        saveAccount(account)
+        return finishSignIn(account, isNew: false)
+    }
+
+    func verifyEmail(token: String) async throws {
+        try gate()
+        guard case .verify(let email)? = links.removeValue(forKey: token), var account = accounts[email] else {
+            throw APIError.server(status: 400, code: "link_invalid", message: "This link was already used or isn't valid. Ask for a new one.")
+        }
+        account.user.emailVerified = true
+        saveAccount(account)
+    }
+
+    func invitation(token: String) async throws -> InvitationPreview {
+        try gate()
+        guard case .invite(let memberId)? = links[token], let member = members.first(where: { $0.id == memberId }) else {
+            throw APIError.server(status: 400, code: "link_invalid", message: "This invitation was already used or isn't valid.")
+        }
+        return InvitationPreview(name: member.name, email: member.email, familyName: family.name, invitedBy: members.first { $0.role == .familyAdmin }?.name)
+    }
+
+    func acceptInvitation(token: String, password: String) async throws -> AuthResponse {
+        try gate()
+        guard password.count >= 10 else { throw APIError.server(status: 400, code: "invalid", message: "password: Use at least 10 characters.") }
+        guard case .invite(let memberId)? = links.removeValue(forKey: token), let index = members.firstIndex(where: { $0.id == memberId }) else {
+            throw APIError.server(status: 400, code: "link_invalid", message: "This invitation was already used or isn't valid.")
+        }
+        members[index].pending = false
+        let member = members[index]
+        let user = APIUser(id: member.id, name: member.name, firstName: member.name.split(separator: " ").first.map(String.init) ?? member.name, email: member.email, role: .parent, family: family,
+                           notifications: NotificationPrefs(notifyPush: true, notifyEmail: true, notifyApproval: true, weeklySummary: false), twoFactor: false, hasPassword: true, emailVerified: true, createdAt: .now)
+        accounts[member.email] = Account(user: user, password: password)
+        currentUser = user
+        return session(for: user, isNew: false)
+    }
+
+    func declineInvitation(token: String) async throws -> InvitationDeclined {
+        try gate()
+        guard case .invite(let memberId)? = links.removeValue(forKey: token) else {
+            throw APIError.server(status: 400, code: "link_invalid", message: "This invitation was already used or isn't valid.")
+        }
+        members.removeAll { $0.id == memberId }
+        return InvitationDeclined(ok: true, familyName: family.name)
     }
 
     func logout(pushToken: String?) async throws {
@@ -427,26 +592,100 @@ final class MockEGuardAPI: EGuardAPIService {
         return try requireUser()
     }
 
-    func updateMe(name: String?, email: String?, timezone: String?) async throws -> APIUser {
+    func updateMe(name: String?, email: String?, password: String?, timezone: String?) async throws -> APIUser {
         try gate()
         var user = try requireUser()
+        guard var account = accounts[user.email] else { throw APIError.notSignedIn }
         if let name { user.name = name; user.firstName = name.split(separator: " ").first.map(String.init) ?? name }
         if let email {
             let normalized = AccountValidator.normalizedEmail(email)
-            if normalized != user.email, accounts[normalized] != nil {
-                throw APIError.server(status: 409, code: "conflict", message: "That email is already in use.")
+            if normalized != user.email {
+                guard let stored = account.password else {
+                    throw APIError.server(status: 403, code: "password_not_set", message: "Set a password with Forgot password? before changing your email.")
+                }
+                guard password == stored else {
+                    throw APIError.server(status: 403, code: "wrong_password", message: "Enter your current password to change your email.")
+                }
+                if accounts[normalized] != nil {
+                    throw APIError.server(status: 409, code: "conflict", message: "That email is already in use.")
+                }
+                accounts.removeValue(forKey: user.email)
+                user.email = normalized
+                user.emailVerified = false
+                account.identities = []
+                _ = issueLink(.verify(email: normalized))
             }
-            let account = accounts.removeValue(forKey: user.email)
-            user.email = normalized
-            user.emailVerified = false
-            accounts[normalized] = Account(user: user, password: account?.password ?? "")
-        } else {
-            accounts[user.email]?.user = user
         }
-        if let timezone, user.isAdmin { user.family.timezone = timezone }
-        accounts[user.email]?.user = user
+        if let timezone {
+            guard user.isAdmin || timezone == user.family.timezone else {
+                throw APIError.server(status: 403, code: "forbidden", message: "Only the family admin can change the family's time zone.")
+            }
+            user.family.timezone = timezone
+        }
+        account.user = user
+        accounts[user.email] = account
         currentUser = user
         return user
+    }
+
+    private func checkConfirmation(_ confirmation: DeletionConfirmation, for user: APIUser) throws {
+        let account = accounts[user.email]
+        switch confirmation {
+        case .password(let password):
+            guard account?.password == password else {
+                throw APIError.server(status: 403, code: "wrong_password", message: "That password doesn't match your current password.")
+            }
+        case .typedDelete:
+            guard account?.password == nil else {
+                throw APIError.server(status: 400, code: "confirm_required", message: "Enter your password to confirm.")
+            }
+        }
+    }
+
+    func deleteAccount(confirmation: DeletionConfirmation) async throws -> AccountDeleted {
+        try gate()
+        let user = try requireUser()
+        try checkConfirmation(confirmation, for: user)
+        accounts[user.email] = nil
+        currentUser = nil
+        if user.isAdmin {
+            summaries = []
+            devicesByChild = [:]
+            alertsList = []
+            members = []
+            return AccountDeleted(ok: true, deleted: "family")
+        }
+        members.removeAll { $0.id == user.id }
+        return AccountDeleted(ok: true, deleted: "account")
+    }
+
+    func exportData() async throws -> Data {
+        try gate()
+        let user = try requireUser()
+        let export: [String: JSONValue] = [
+            "exportedAt": .string(ISO8601DateFormatter.withFractional.string(from: .now)),
+            "family": .string(user.family.name),
+            "parents": .array(members.map { .string($0.email) }),
+            "children": .array(summaries.map { .string($0.name) }),
+        ]
+        return try JSONEncoder().encode(JSONValue.object(export))
+    }
+
+    func identities() async throws -> [LinkedIdentity] {
+        try gate()
+        let user = try requireUser()
+        return accounts[user.email]?.identities ?? []
+    }
+
+    func deleteIdentity(id: String) async throws {
+        try gate()
+        let user = try requireUser()
+        guard var account = accounts[user.email] else { return }
+        guard account.password != nil || account.identities.count > 1 else {
+            throw APIError.server(status: 409, code: "conflict", message: "This is your only way to sign in. Set a password first.")
+        }
+        account.identities.removeAll { $0.id == id }
+        saveAccount(account)
     }
 
     func changePassword(current: String, next: String) async throws -> OKResponse {
@@ -458,6 +697,73 @@ final class MockEGuardAPI: EGuardAPIService {
         guard next.count >= 10 else { throw APIError.server(status: 400, code: "invalid", message: "next: Use at least 10 characters.") }
         accounts[user.email]?.password = next
         return OKResponse(ok: true, message: "Your password was changed. Other devices were signed out.")
+    }
+
+    func twoFactorStatus() async throws -> TwoFactorStatus {
+        try gate()
+        let user = try requireUser()
+        let account = accounts[user.email]
+        return TwoFactorStatus(available: true, enabled: account?.twoFactorEnabled ?? false, recoveryCodesLeft: account?.recoveryCodes.count ?? 0)
+    }
+
+    func setupTwoFactor() async throws -> TwoFactorSetup {
+        try gate()
+        let user = try requireUser()
+        guard var account = accounts[user.email] else { throw APIError.notSignedIn }
+        guard !account.twoFactorEnabled else { throw APIError.server(status: 409, code: "conflict", message: "Two-step verification is already on.") }
+        let secret = "JBSWY3DPEHPK3PXP"
+        account.twoFactorSecret = secret
+        saveAccount(account)
+        return TwoFactorSetup(secret: secret, uri: "otpauth://totp/eGuard:\(user.email)?secret=\(secret)&issuer=eGuard")
+    }
+
+    private func requireTwoFactorCode(_ code: String, account: inout Account) throws {
+        if code == Self.authenticatorCode { return }
+        if let index = account.recoveryCodes.firstIndex(of: code) {
+            account.recoveryCodes.remove(at: index)
+            return
+        }
+        throw APIError.server(status: 400, code: "wrong_code", message: "That code isn't right. Try again.")
+    }
+
+    private func freshRecoveryCodes() -> [String] {
+        (0..<10).map { _ in String((0..<8).map { _ in "abcdefghjkmnpqrstuvwxyz23456789".randomElement()! }) }
+    }
+
+    func confirmTwoFactor(code: String) async throws -> [String] {
+        try gate()
+        let user = try requireUser()
+        guard var account = accounts[user.email] else { throw APIError.notSignedIn }
+        guard account.twoFactorSecret != nil else { throw APIError.server(status: 400, code: "setup_missing", message: "Start the setup again.") }
+        guard code == Self.authenticatorCode else { throw APIError.server(status: 400, code: "wrong_code", message: "That code isn't right. Try again.") }
+        account.twoFactorEnabled = true
+        account.recoveryCodes = freshRecoveryCodes()
+        account.user.twoFactor = true
+        saveAccount(account)
+        return account.recoveryCodes
+    }
+
+    func regenerateRecoveryCodes(code: String) async throws -> [String] {
+        try gate()
+        let user = try requireUser()
+        guard var account = accounts[user.email] else { throw APIError.notSignedIn }
+        try requireTwoFactorCode(code, account: &account)
+        account.recoveryCodes = freshRecoveryCodes()
+        saveAccount(account)
+        return account.recoveryCodes
+    }
+
+    func disableTwoFactor(code: String) async throws -> TwoFactorStatus {
+        try gate()
+        let user = try requireUser()
+        guard var account = accounts[user.email] else { throw APIError.notSignedIn }
+        try requireTwoFactorCode(code, account: &account)
+        account.twoFactorEnabled = false
+        account.twoFactorSecret = nil
+        account.recoveryCodes = []
+        account.user.twoFactor = false
+        saveAccount(account)
+        return TwoFactorStatus(available: true, enabled: false, recoveryCodesLeft: 0)
     }
 
     func resendVerification() async throws -> VerificationSend {
@@ -536,11 +842,12 @@ final class MockEGuardAPI: EGuardAPIService {
     }
 
     private func familyHealth() -> HealthScore {
-        let scores = summaries.map(\.health)
-        guard !scores.isEmpty else { return HealthScore(score: 0, total: 10, label: "Not configured") }
-        // Family score: the average per protection across children, rounded down.
+        let scores = summaries.map(\.health).filter { $0.total > 0 }
+        guard !scores.isEmpty else { return HealthScore(score: 0, total: 0, label: "No devices yet", offline: 0, verified: false) }
+        // Family score: the average per protection across children with devices, rounded down.
         let score = scores.map(\.score).reduce(0, +) / scores.count
-        var health = HealthScore(score: score, total: 10, label: nil)
+        let offline = devicesByChild.values.flatMap { $0 }.filter { $0.state == .offline }.count
+        var health = HealthScore(score: score, total: 10, label: nil, offline: offline, verified: score == 10 && offline == 0)
         health.label = health.grade
         return health
     }
@@ -562,7 +869,7 @@ final class MockEGuardAPI: EGuardAPIService {
         }
         let health = childId.map { healthScore(childId: $0) } ?? familyHealth()
         return HealthReport(
-            score: health.score, total: health.total, label: health.grade, checks: combinedChecks, toFix: toFix,
+            score: health.score, total: health.total, label: health.grade, offline: health.offline, verified: health.verified, checks: combinedChecks, toFix: toFix,
             children: childId == nil ? summaries.map { ChildHealth(id: $0.id, name: $0.name, score: $0.health.score, total: $0.health.total, status: $0.status) } : nil
         )
     }
@@ -631,9 +938,45 @@ final class MockEGuardAPI: EGuardAPIService {
         guard user.isEmailVerified else {
             throw APIError.server(status: 403, code: "email_unverified", message: "Verify your email before pairing a device. We sent you a link.")
         }
+        let slotsUsed = devicesByChild.values.reduce(0) { $0 + $1.count } + browsersList.count
+        if let limit = entitlements.deviceLimit, slotsUsed >= limit {
+            throw APIError.server(status: 409, code: "plan_limit", message: APIClient.planLimitMessage)
+        }
         let letters = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
         let code = String((0..<8).map { _ in letters.randomElement()! })
-        return PairingCode(code: code, expiresAt: Date.now.addingTimeInterval(15 * 60), childName: child.name)
+        lastPairingCode = (code, childId)
+        return PairingCode(code: code, expiresAt: Date.now.addingTimeInterval(15 * 60), childName: child.name, kind: "DEVICE")
+    }
+
+    /// The newest phone-app code, so a `MockDeviceAPI` sharing this server can redeem it.
+    private(set) var lastPairingCode: (code: String, childId: String)?
+
+    func browserPairingCode(childId: String, deviceLabel: String) async throws -> PairingCode {
+        try gate()
+        let user = try requireUser()
+        let child = summaries[try requireChild(childId)]
+        guard user.isEmailVerified else {
+            throw APIError.server(status: 403, code: "email_unverified", message: "Verify your email before adding a browser. We sent you a link.")
+        }
+        guard (1...60).contains(deviceLabel.trimmingCharacters(in: .whitespaces).count) else {
+            throw APIError.server(status: 400, code: "invalid", message: "deviceLabel: Enter a name between 1 and 60 characters.")
+        }
+        let letters = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+        let code = String((0..<8).map { _ in letters.randomElement()! })
+        return PairingCode(code: code, expiresAt: Date.now.addingTimeInterval(15 * 60), childName: child.name, kind: "BROWSER")
+    }
+
+    /// Redeems a phone-app code the way `POST /api/device/v1/pair` would. Used by the mock device API.
+    func redeemPairingCode(_ code: String, name: String, platform: DevicePlatformKind, model: String, kind: String, osVersion: String) throws -> (deviceId: String, childName: String) {
+        let normalized = code.uppercased().filter { $0.isLetter || $0.isNumber }
+        guard let pending = lastPairingCode, pending.code == normalized, let child = summaries.first(where: { $0.id == pending.childId }) else {
+            throw APIError.server(status: 400, code: "invalid", message: "Pairing code is invalid or expired")
+        }
+        lastPairingCode = nil
+        let device = addDevice(childId: child.id, childName: child.name, name: name, model: model, platform: platform, kind: kind, osVersion: osVersion, lastSeen: 0)
+        fullReportRequested.insert(device.id)
+        alertsList.insert(makeAlert(childId: child.id, deviceId: device.id, severity: .info, category: .devices, icon: "smartphone", title: "New device synchronized", body: "\(name) is now paired with \(child.name).", subject: name, age: 0, dismissible: true, action: AlertAction(type: "VIEW_DEVICE", label: "View device", childId: child.id, key: nil, deviceId: device.id)), at: 0)
+        return (device.id, child.name)
     }
 
     /// Lets previews and tests simulate the child's device pairing.
@@ -684,7 +1027,10 @@ final class MockEGuardAPI: EGuardAPIService {
             today: TodaySummary(minutes: summary.todayMinutes ?? 0, limitMinutes: summary.todayLimitMinutes, appsUsed: apps.filter { ($0.todayMinutes ?? 0) > 0 }.count,
                                 topApps: apps.filter { ($0.todayMinutes ?? 0) > 0 }.sorted { ($0.todayMinutes ?? 0) > ($1.todayMinutes ?? 0) }.prefix(3).map { TopApp(name: $0.name, minutes: $0.todayMinutes ?? 0) }),
             bedtime: bedtime.map { BedtimeInfo(enabled: $0.policy["enabled"]?.boolValue ?? false, start: $0.policy["start"]?.stringValue ?? "21:30", end: $0.policy["end"]?.stringValue ?? "06:00", days: $0.policy["days"]?.stringValue ?? "EVERY_DAY", label: $0.policyLabel) },
-            location: LocationInfo(sharing: sharing, placeLabel: sharing ? "Home" : nil, updatedAt: sharing ? Date.now.addingTimeInterval(-120) : nil, label: devices.isEmpty ? "Waiting for location" : (sharing ? "Sharing enabled" : "Sharing off")),
+            location: {
+                let state: LocationState = !entitlements.hasLocationSharing ? .planRequired : (devices.isEmpty ? .noDevices : (sharing ? .located : .sharingOff))
+                return LocationInfo(sharing: sharing && state == .located, state: state.rawValue, placeLabel: state == .located ? "Home" : nil, updatedAt: state == .located ? Date.now.addingTimeInterval(-120) : nil, label: state.title)
+            }(),
             deviceProtection: DeviceProtectionInfo(state: devices.isEmpty ? "no_devices" : (devices.first?.state.rawValue ?? "healthy"), label: devices.isEmpty ? "No devices" : (devices.first?.state.title ?? "Healthy")),
             pendingApprovals: apps.filter { $0.approval == .pending }.count,
             devices: devices,
@@ -704,11 +1050,11 @@ final class MockEGuardAPI: EGuardAPIService {
         return try await child(id: id)
     }
 
-    func deleteChild(id: String, password: String) async throws {
+    func deleteChild(id: String, confirmation: DeletionConfirmation) async throws {
         try gate()
         let user = try requireUser()
         guard user.isAdmin else { throw APIError.server(status: 403, code: "forbidden", message: "Only the family admin can delete a child.") }
-        guard accounts[user.email]?.password == password else { throw APIError.server(status: 403, code: "wrong_password", message: "That password doesn't match your current password.") }
+        try checkConfirmation(confirmation, for: user)
         let index = try requireChild(id)
         summaries.remove(at: index)
         devicesByChild[id] = nil
@@ -869,6 +1215,7 @@ final class MockEGuardAPI: EGuardAPIService {
         for itemIndex in batch.items.indices {
             for deviceIndex in batch.items[itemIndex].devices.indices where batch.items[itemIndex].devices[deviceIndex].status == .awaitingParent {
                 batch.items[itemIndex].devices[deviceIndex].status = .delivered
+                fullReportRequested.insert(batch.items[itemIndex].devices[deviceIndex].deviceId)
                 confirmed += 1
             }
             batch.items[itemIndex].status = Self.leastFinished(batch.items[itemIndex].devices)
@@ -903,6 +1250,9 @@ final class MockEGuardAPI: EGuardAPIService {
     func screenTime(childId: String, period: ScreenTimePeriod) async throws -> ScreenTimeReport {
         try gate()
         let summary = summaries[try requireChild(childId)]
+        if period == .month, !entitlements.hasAdvancedReports {
+            throw APIError.server(status: 403, code: "plan_required", message: "30-day reports aren't included in your plan.")
+        }
         let hasDevice = summary.deviceCount > 0
         let limit = summary.todayLimitMinutes
         let apps = (appsByChild[childId] ?? []).filter { ($0.todayMinutes ?? 0) > 0 }.sorted { ($0.todayMinutes ?? 0) > ($1.todayMinutes ?? 0) }
@@ -934,14 +1284,21 @@ final class MockEGuardAPI: EGuardAPIService {
         _ = try requireChild(childId)
         let all = appsByChild[childId] ?? []
         let counts = AppCounts(all: all.count, blocked: all.filter { $0.approval == .blocked }.count, pending: all.filter { $0.approval == .pending }.count, installed: all.filter { $0.approval != .blocked }.count)
-        let filtered: [ChildApp]
+        var filtered: [ChildApp]
         switch filter {
         case .installed: filtered = all.filter { $0.approval != .blocked }
         case .blocked: filtered = all.filter { $0.approval == .blocked }
-        case .pending: filtered = all.filter { $0.approval == .pending }
+        case .pending: filtered = all.filter { $0.isRequested }
         case nil: filtered = all
         }
-        return AppsResponse(counts: counts, apps: filtered)
+        var limited: AppsLimited?
+        if let limit = entitlements.appMonitoringLimit, filtered.count > limit {
+            // Requests first, then the most used.
+            filtered.sort { ($0.isRequested ? 1 : 0, $0.todayMinutes ?? 0) > ($1.isRequested ? 1 : 0, $1.todayMinutes ?? 0) }
+            limited = AppsLimited(hidden: filtered.count - limit, message: "Your plan lists \(limit) apps. \(filtered.count - limit) more aren't shown.")
+            filtered = Array(filtered.prefix(limit))
+        }
+        return AppsResponse(counts: counts, apps: filtered, limited: limited)
     }
 
     func updateApp(id: String, patch: AppPatch) async throws -> AppRuleUpdate {
@@ -952,6 +1309,7 @@ final class MockEGuardAPI: EGuardAPIService {
             if let approval = patch.approval {
                 app.approval = approval
                 app.approvalLabel = approval.title
+                app.requested = false
                 app.allowed = approval != .blocked && approval != .pending
                 alertsList = alertsList.map { alert in
                     var copy = alert
@@ -981,12 +1339,17 @@ final class MockEGuardAPI: EGuardAPIService {
     func location(childId: String) async throws -> LocationResponse {
         try gate()
         _ = try requireChild(childId)
+        guard entitlements.hasLocationSharing else {
+            throw APIError.server(status: 403, code: "plan_required", message: "Location sharing isn't included in your plan.")
+        }
         let devices = devicesByChild[childId] ?? []
         let protection = protectionsByChild[childId]?.first { $0.key == "LOCATION" }
         let sharing = protection?.policy["sharing"]?.boolValue == true && protection?.status == .pass && !devices.isEmpty
-        let current = sharing ? CurrentLocation(deviceId: devices[0].id, deviceName: devices[0].name, lat: 10.6785, lng: 124.8006, accuracyM: 25, placeLabel: "Baybay City, Leyte", locatedAt: Date.now.addingTimeInterval(-120), updatedLabel: "Last updated 2 minutes ago") : nil
+        let located = Date.now.addingTimeInterval(-120)
+        let current = sharing ? CurrentLocation(deviceId: devices[0].id, deviceName: devices[0].name, lat: 10.6785, lng: 124.8006, accuracyM: 25, placeLabel: "Baybay City, Leyte", locatedAt: located, updatedLabel: located.verifiedDescription(), fresh: devices[0].state != .offline, approximate: false) : nil
         let visits = sharing && privacySettings.keepLocationHistory ? Self.sampleVisits(deviceName: devices[0].name) : []
-        return LocationResponse(childId: childId, sharing: sharing, current: current,
+        let state: LocationState = devices.isEmpty ? .noDevices : (!sharing ? .sharingOff : (current == nil ? .waiting : .located))
+        return LocationResponse(childId: childId, sharing: sharing, state: state.rawValue, current: current,
                                 devices: devices.map { LocationDevice(id: $0.id, name: $0.name, sharing: sharing, hasLocation: sharing) },
                                 history: LocationHistory(enabled: privacySettings.keepLocationHistory, visits: visits))
     }
@@ -1109,13 +1472,124 @@ final class MockEGuardAPI: EGuardAPIService {
         throw APIError.server(status: 404, code: "not_found", message: "That device couldn't be found.")
     }
 
-    func unpairDevice(id: String) async throws {
+    func unpairDevice(id: String, confirmation: DeletionConfirmation) async throws {
         try gate()
+        let user = try requireUser()
+        try checkConfirmation(confirmation, for: user)
+        var found = false
         for (childId, devices) in devicesByChild where devices.contains(where: { $0.id == id }) {
+            found = true
+            let removed = devices.first { $0.id == id }
             devicesByChild[childId] = devices.filter { $0.id != id }
             protectionsByChild[childId] = (protectionsByChild[childId] ?? []).map { var copy = $0; copy.devices.removeAll { $0.deviceId == id }; return copy }
             refreshSummary(childId)
+            alertsList.insert(makeAlert(childId: childId, deviceId: nil, severity: .info, category: .devices, icon: "smartphone", title: "Device removed", body: "\(removed?.name ?? "A device") was removed from eGuard, so its protections are no longer verified.", subject: removed?.name, age: 0, dismissible: true, action: nil), at: 0)
         }
+        removedDeviceIds.insert(id)
+        guard found else { throw APIError.server(status: 404, code: "not_found", message: "That device couldn't be found.") }
+    }
+
+    /// Devices a parent removed. The mock device API answers 401 for them, like the real server.
+    private(set) var removedDeviceIds: Set<String> = []
+
+    func browsers() async throws -> [ConnectedBrowser] {
+        try gate()
+        _ = try requireUser()
+        return browsersList
+    }
+
+    func removeBrowser(id: String, confirmation: DeletionConfirmation) async throws {
+        try gate()
+        let user = try requireUser()
+        try checkConfirmation(confirmation, for: user)
+        guard let browser = browsersList.first(where: { $0.id == id }) else {
+            throw APIError.server(status: 404, code: "not_found", message: "That browser couldn't be found.")
+        }
+        browsersList.removeAll { $0.id == id }
+        alertsList.insert(makeAlert(childId: browser.childId, deviceId: nil, severity: .info, category: .devices, icon: "globe", title: "Browser removed", body: "\(browser.deviceLabel) was disconnected from eGuard.", subject: browser.deviceLabel, age: 0, dismissible: true, action: nil), at: 0)
+    }
+
+    func browserPolicy(childId: String) async throws -> BrowserPolicy {
+        try gate()
+        let child = summaries[try requireChild(childId)]
+        if let policy = browserPolicies[childId] { return policy }
+        let policy = BrowserPolicy(
+            version: 1, safeBrowsing: true, safeSearch: true,
+            blockedCategories: child.age < 13 ? ["ADULT", "GAMBLING", "VIOLENCE", "SOCIAL"] : ["ADULT", "GAMBLING"],
+            blockedDomains: [], allowedDomains: [], unknownSitesPolicy: child.age < 13 ? "WARN" : "ALLOW",
+            schedule: nil, updatedBy: "eGuard defaults", updatedAt: .now,
+            categories: [
+                BrowserCategory(key: "ADULT", label: "Adult content", hint: "Pornography and explicit material"),
+                BrowserCategory(key: "GAMBLING", label: "Gambling", hint: "Betting and casino sites"),
+                BrowserCategory(key: "VIOLENCE", label: "Violence", hint: "Graphic or violent content"),
+                BrowserCategory(key: "SOCIAL", label: "Social networks", hint: "Social media and chat"),
+            ]
+        )
+        browserPolicies[childId] = policy
+        return policy
+    }
+
+    func updateBrowserPolicy(childId: String, policy update: BrowserPolicyUpdate) async throws -> BrowserPolicy {
+        try gate()
+        var policy = try await browserPolicy(childId: childId)
+        if let base = update.baseVersion, base != policy.version {
+            throw APIError.server(status: 409, code: "stale_version", message: "Someone else changed these settings. Reload and try again.")
+        }
+        let overlap = Set(update.blockedDomains).intersection(update.allowedDomains)
+        guard overlap.isEmpty else {
+            throw APIError.server(status: 400, code: "invalid", message: "\(overlap.first!) can't be on both lists.")
+        }
+        let changed = policy.update != BrowserPolicyUpdate(safeBrowsing: update.safeBrowsing, safeSearch: update.safeSearch, blockedCategories: update.blockedCategories, blockedDomains: update.blockedDomains, allowedDomains: update.allowedDomains, unknownSitesPolicy: update.unknownSitesPolicy, schedule: update.schedule, baseVersion: policy.version)
+        policy.safeBrowsing = update.safeBrowsing
+        policy.safeSearch = update.safeSearch
+        policy.blockedCategories = update.blockedCategories
+        policy.blockedDomains = Array(Set(update.blockedDomains)).sorted()
+        policy.allowedDomains = Array(Set(update.allowedDomains)).sorted()
+        policy.unknownSitesPolicy = update.unknownSitesPolicy
+        policy.schedule = update.schedule
+        if changed {
+            policy.version += 1
+            policy.updatedBy = "\(currentUser?.name ?? "Parent") on iOS app"
+            policy.updatedAt = .now
+        }
+        browserPolicies[childId] = policy
+        return policy
+    }
+
+    func browserAccessRequests(childId: String) async throws -> BrowserAccessRequests {
+        try gate()
+        _ = try requireChild(childId)
+        let mine = browserRequests.filter { browserRequestChild[$0.id] == childId }
+        return BrowserAccessRequests(pending: mine.filter(\.isPending), recent: mine.filter { !$0.isPending })
+    }
+
+    func decideBrowserAccessRequest(id: String, decision: BrowserAccessDecision) async throws -> BrowserAccessRequest {
+        try gate()
+        let user = try requireUser()
+        guard let index = browserRequests.firstIndex(where: { $0.id == id }) else {
+            throw APIError.server(status: 404, code: "not_found", message: "That request couldn't be found.")
+        }
+        guard browserRequests[index].isPending else {
+            throw APIError.server(status: 409, code: "already_decided", message: "Another parent already answered this request.")
+        }
+        var request = browserRequests[index]
+        request.decidedAt = .now
+        request.decidedBy = user.name
+        switch decision {
+        case .approve(let duration):
+            request.status = "APPROVED"
+            request.duration = duration.rawValue
+            if duration == .always, let childId = browserRequestChild[id] {
+                var policy = try await browserPolicy(childId: childId)
+                policy.allowedDomains = Array(Set(policy.allowedDomains + [request.domain])).sorted()
+                policy.version += 1
+                browserPolicies[childId] = policy
+            }
+        case .deny:
+            request.status = "DENIED"
+        }
+        browserRequests[index] = request
+        return request
     }
 
     private var checkRuns: [String: Int] = [:]
@@ -1123,8 +1597,14 @@ final class MockEGuardAPI: EGuardAPIService {
     func startCheck(deviceId: String?) async throws -> String {
         try gate()
         _ = try requireUser()
+        guard devicesByChild.values.contains(where: { !$0.isEmpty }) else {
+            throw APIError.server(status: 409, code: "no_devices", message: "Pair a device before running a check.")
+        }
         let runId = nextID("run")
         checkRuns[runId] = 0
+        for device in devicesByChild.values.flatMap({ $0 }) where deviceId == nil || device.id == deviceId {
+            fullReportRequested.insert(device.id)
+        }
         return runId
     }
 
@@ -1141,25 +1621,46 @@ final class MockEGuardAPI: EGuardAPIService {
 
     // MARK: Family and privacy
 
+    private var planName: String {
+        switch entitlements.childLimit {
+        case 1: "Free"
+        case 5: "eGuard Plus"
+        default: "Family Pro"
+        }
+    }
+
     func family() async throws -> Family {
         try gate()
         let user = try requireUser()
+        let deviceCount = devicesByChild.values.reduce(0) { $0 + $1.count }
         return Family(id: user.family.id, name: user.family.name, timezone: user.family.timezone, members: members, children: summaries,
-                      deviceCount: devicesByChild.values.reduce(0) { $0 + $1.count }, deviceLimit: 8, canManage: user.isAdmin)
+                      deviceCount: deviceCount, devicesUsed: deviceCount + browsersList.count, deviceLimit: entitlements.deviceLimit ?? 10,
+                      childCount: summaries.count, childLimit: entitlements.childLimit, plan: planName, entitlements: entitlements, canManage: user.isAdmin)
     }
 
-    func addMember(name: String, email: String, password: String) async throws -> FamilyMember {
+    func inviteMember(name: String, email: String) async throws -> InvitationSent {
         try gate()
         let user = try requireUser()
         guard user.isAdmin else { throw APIError.server(status: 403, code: "forbidden", message: "Only the family admin can add parents.") }
         let normalized = AccountValidator.normalizedEmail(email)
-        guard accounts[normalized] == nil else { throw APIError.server(status: 409, code: "conflict", message: "That email already has an eGuard account.") }
-        let member = FamilyMember(id: nextID("usr"), name: name, email: normalized, role: .parent, createdAt: .now, you: false)
-        let parent = APIUser(id: member.id, name: name, firstName: name.split(separator: " ").first.map(String.init) ?? name, email: normalized, role: .parent, family: user.family,
-                             notifications: user.notifications, twoFactor: false, emailVerified: false, createdAt: .now)
-        accounts[normalized] = Account(user: parent, password: password)
+        guard accounts[normalized] == nil, !members.contains(where: { $0.email == normalized }) else {
+            throw APIError.server(status: 409, code: "conflict", message: "That email already has an eGuard account.")
+        }
+        let member = FamilyMember(id: nextID("usr"), name: name, email: normalized, role: .parent, createdAt: .now, you: false, pending: true)
         members.append(member)
-        return member
+        _ = issueLink(.invite(memberId: member.id))
+        return InvitationSent(id: member.id, name: member.name, email: member.email, role: .parent, pending: true, emailSent: true, expiresInDays: 7)
+    }
+
+    func resendInvitation(memberId: String) async throws {
+        try gate()
+        let user = try requireUser()
+        guard user.isAdmin else { throw APIError.server(status: 403, code: "forbidden", message: "Only the family admin can resend invitations.") }
+        guard let member = members.first(where: { $0.id == memberId }) else {
+            throw APIError.server(status: 404, code: "not_found", message: "That parent couldn't be found.")
+        }
+        guard member.isPending else { throw APIError.server(status: 409, code: "conflict", message: "\(member.name) already accepted the invitation.") }
+        _ = issueLink(.invite(memberId: memberId))
     }
 
     func removeMember(id: String) async throws {
@@ -1168,6 +1669,59 @@ final class MockEGuardAPI: EGuardAPIService {
         guard user.isAdmin else { throw APIError.server(status: 403, code: "forbidden", message: "Only the family admin can remove parents.") }
         guard id != user.id else { throw APIError.server(status: 400, code: "invalid", message: "You can't remove yourself.") }
         members.removeAll { $0.id == id }
+    }
+
+    func organizations() async throws -> OrganizationsResponse {
+        try gate()
+        let user = try requireUser()
+        return OrganizationsResponse(organizations: organizationsList, canManage: user.isAdmin,
+                                     privacy: "Organizations only see how many families joined. They never see your children, devices or activity.")
+    }
+
+    private static let knownOrganizations: [String: Organization] = [
+        "SCHL2026": Organization(id: "org_1", name: "Baybay Central School", kind: "SCHOOL", kindLabel: "School", joinedAt: nil),
+        "CMTY4KID": Organization(id: "org_2", name: "Leyte Parents Circle", kind: "COMMUNITY", kindLabel: "Community group", joinedAt: nil),
+    ]
+
+    private func normalizedJoinCode(_ code: String) -> String {
+        code.uppercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    func previewOrganization(code: String) async throws -> OrganizationPreview {
+        try gate()
+        let user = try requireUser()
+        guard user.isAdmin else { throw APIError.server(status: 403, code: "forbidden", message: "Only the family admin can join an organization.") }
+        guard let organization = Self.knownOrganizations[normalizedJoinCode(code)] else {
+            throw APIError.server(status: 400, code: "invalid", message: "That code doesn't match an organization. Check it and try again.")
+        }
+        return OrganizationPreview(name: organization.name, kind: organization.kind, kindLabel: organization.kindLabel, alreadyJoined: organizationsList.contains { $0.id == organization.id },
+                                   message: "\(organization.name) will see that your family joined and how many families have joined in total. It won't see your children, devices, locations or activity.")
+    }
+
+    func joinOrganization(code: String) async throws -> OrganizationJoined {
+        try gate()
+        let user = try requireUser()
+        guard user.isAdmin else { throw APIError.server(status: 403, code: "forbidden", message: "Only the family admin can join an organization.") }
+        guard var organization = Self.knownOrganizations[normalizedJoinCode(code)] else {
+            throw APIError.server(status: 400, code: "invalid", message: "That code doesn't match an organization. Check it and try again.")
+        }
+        if !organizationsList.contains(where: { $0.id == organization.id }) {
+            guard organizationsList.count < 5 else { throw APIError.server(status: 409, code: "conflict", message: "Your family is already in the maximum number of organizations.") }
+            organization.joinedAt = .now
+            organizationsList.append(organization)
+        }
+        return OrganizationJoined(ok: true, name: organization.name, organizations: organizationsList)
+    }
+
+    func leaveOrganization(id: String) async throws -> OrganizationLeft {
+        try gate()
+        let user = try requireUser()
+        guard user.isAdmin else { throw APIError.server(status: 403, code: "forbidden", message: "Only the family admin can leave an organization.") }
+        guard let organization = organizationsList.first(where: { $0.id == id }) else {
+            throw APIError.server(status: 404, code: "not_found", message: "That organization couldn't be found.")
+        }
+        organizationsList.removeAll { $0.id == id }
+        return OrganizationLeft(ok: true, name: organization.name)
     }
 
     func privacy() async throws -> PrivacySettings {
@@ -1191,18 +1745,23 @@ final class MockEGuardAPI: EGuardAPIService {
         try gate()
         _ = try requireUser()
         let renews = Calendar.current.date(byAdding: .day, value: 15, to: .now) ?? .now
+        let childLimit = entitlements.childLimit ?? 5
+        let deviceLimit = entitlements.deviceLimit ?? 10
         return SubscriptionInfo(
-            plan: "eGuard Plus", status: "ACTIVE", renewsAt: renews, renewsLabel: "Renews on \(renews.formatted(date: .abbreviated, time: .omitted))",
+            plan: planName, planId: planName == "Free" ? "FREE" : (planName == "eGuard Plus" ? "PLUS" : "PRO"), status: "ACTIVE", renewsAt: renews,
+            renewsLabel: "Renews on \(renews.formatted(date: .abbreviated, time: .omitted))",
             features: [
-                PlanFeature(key: "children", included: true, label: "Unlimited children"),
-                PlanFeature(key: "devices", included: true, label: "Up to 8 devices"),
-                PlanFeature(key: "health_checks", included: true, label: "Configuration health checks"),
-                PlanFeature(key: "alerts", included: true, label: "Protection alerts"),
-                PlanFeature(key: "reports", included: true, label: "Advanced reports"),
-                PlanFeature(key: "priority_support", included: false, label: "Priority support"),
+                PlanFeature(key: "children", included: true, label: "Up to \(childLimit) child\(childLimit == 1 ? "" : "ren")"),
+                PlanFeature(key: "protection", included: true, label: "Full protection features"),
+                PlanFeature(key: "verification", included: true, label: "Configuration verification"),
+                PlanFeature(key: "alerts", included: entitlements.hasRealtimeAlerts, label: "Real-time alerts"),
+                PlanFeature(key: "location", included: entitlements.hasLocationSharing, label: "Location sharing"),
+                PlanFeature(key: "reports", included: entitlements.hasAdvancedReports, label: "30-day reports"),
+                PlanFeature(key: "support", included: planName != "Free", label: "Priority support"),
             ],
-            usage: PlanUsage(devicesUsed: devicesByChild.values.reduce(0) { $0 + $1.count }, deviceLimit: 8, children: summaries.count),
-            canManage: currentUser?.isAdmin ?? false, billingAvailable: false, store: nil,
+            entitlements: entitlements,
+            usage: PlanUsage(devicesUsed: devicesByChild.values.reduce(0) { $0 + $1.count } + browsersList.count, deviceLimit: deviceLimit, children: summaries.count, childLimit: childLimit),
+            canManage: currentUser?.isAdmin ?? false, billingAvailable: false, store: StoreInfo(name: "PAYMONGO", productId: nil, autoRenewing: true, expiresAt: renews),
             // The iOS client never shows an upgrade path, so the mock omits it like the server does for X-eGuard-Client: ios.
             upgrade: nil
         )
@@ -1222,5 +1781,154 @@ final class MockEGuardAPI: EGuardAPIService {
         try gate()
         _ = try requireUser()
         return ticketsList
+    }
+
+    // MARK: Child device side (used by MockDeviceAPI)
+
+    /// Devices whose next `/sync` should answer with a full report: just paired, a parent tapped
+    /// "Verify now", or a check is running.
+    private var fullReportRequested: Set<String> = []
+    private var lastFixes: [String: LocationFix] = [:]
+
+    func isDeviceRemoved(_ deviceId: String) -> Bool {
+        removedDeviceIds.contains(deviceId) || !devicesByChild.values.contains { $0.contains { $0.id == deviceId } }
+    }
+
+    private func childId(ofDevice deviceId: String) -> String? {
+        devicesByChild.first { $0.value.contains { $0.id == deviceId } }?.key
+    }
+
+    /// `POST /sync` for a device: the child's policy, the open APPLY requests for this device, and app rules.
+    func deviceSync(deviceId: String) throws -> SyncResponse {
+        guard let childId = childId(ofDevice: deviceId), !removedDeviceIds.contains(deviceId) else {
+            throw DeviceAPIError.server(status: 401, message: "Invalid or missing device token")
+        }
+        touchDevice(deviceId)
+        let protections = protectionsByChild[childId] ?? []
+        let policy = protections.map { PolicyEntry(key: $0.key, config: $0.policy) }
+        var requests: [DeviceRequest] = []
+        for (batchId, var batch) in batches where batch.childId == childId {
+            for itemIndex in batch.items.indices {
+                for deviceIndex in batch.items[itemIndex].devices.indices {
+                    var device = batch.items[itemIndex].devices[deviceIndex]
+                    guard device.deviceId == deviceId, !device.isGuided, device.status == .pending || device.status == .delivered else { continue }
+                    device.status = .delivered
+                    batch.items[itemIndex].devices[deviceIndex] = device
+                    let config = protections.first { $0.key == batch.items[itemIndex].key }?.policy ?? .object([:])
+                    requests.append(DeviceRequest(id: device.requestId, key: batch.items[itemIndex].key, config: config))
+                }
+                batch.items[itemIndex].status = Self.leastFinished(batch.items[itemIndex].devices)
+            }
+            batch.summary = Self.summary(batch.items)
+            batches[batchId] = batch
+        }
+        return SyncResponse(
+            deviceId: deviceId, policy: policy, requests: requests,
+            apps: (appsByChild[childId] ?? []).map { AppRule(name: $0.name, approval: $0.approval, dailyLimitMinutes: $0.dailyLimitMinutes) },
+            fullReportRequested: fullReportRequested.contains(deviceId), nextSyncSeconds: 300, timezone: family.timezone,
+            features: SyncFeatures(locationSharing: entitlements.hasLocationSharing), minAppVersion: nil
+        )
+    }
+
+    private func touchDevice(_ deviceId: String) {
+        guard let childId = childId(ofDevice: deviceId), let index = devicesByChild[childId]?.firstIndex(where: { $0.id == deviceId }) else { return }
+        devicesByChild[childId]?[index].lastSeenAt = .now
+        devicesByChild[childId]?[index].lastSeenLabel = Date.now.verifiedDescription()
+        refreshSummary(childId)
+    }
+
+    /// `POST /report`: an entry equal to the policy verifies open requests and passes the check;
+    /// a different one fails them with "Device reported …".
+    func recordDeviceReport(deviceId: String, entries: [ReportEntry], full: Bool) -> [IgnoredEntry] {
+        guard let childId = childId(ofDevice: deviceId), var list = protectionsByChild[childId] else { return [] }
+        var ignored: [IgnoredEntry] = []
+        for entry in entries {
+            guard let index = list.firstIndex(where: { $0.key == entry.key }) else {
+                ignored.append(IgnoredEntry(key: entry.key, error: "Unknown protection"))
+                continue
+            }
+            let reported = entry.config.setting("key", to: .string(entry.key))
+            let matches = reported == list[index].policy
+            let label = ProtectionConfigFormatter.label(key: entry.key, config: reported)
+            list[index].devices = list[index].devices.map { device in
+                guard device.deviceId == deviceId, device.capability != .unsupported else { return device }
+                var copy = device
+                copy.reported = reported
+                copy.reportedLabel = label
+                copy.status = matches ? .pass : .warning
+                copy.message = matches ? "Verified with the device" : "Device reported \(label)"
+                copy.lastVerifiedAt = .now
+                return copy
+            }
+            list[index].status = list[index].devices.filter { $0.capability != .unsupported }.map(\.status).min { rank($0) < rank($1) } ?? list[index].status
+            for (batchId, var batch) in batches where batch.childId == childId {
+                for itemIndex in batch.items.indices where batch.items[itemIndex].key == entry.key {
+                    for deviceIndex in batch.items[itemIndex].devices.indices where batch.items[itemIndex].devices[deviceIndex].deviceId == deviceId && !batch.items[itemIndex].devices[deviceIndex].status.isFinished {
+                        batch.items[itemIndex].devices[deviceIndex].status = matches ? .verified : .failed
+                        batch.items[itemIndex].devices[deviceIndex].failureReason = matches ? nil : "Device reported \(label)"
+                    }
+                    batch.items[itemIndex].status = Self.leastFinished(batch.items[itemIndex].devices)
+                    if batch.items[itemIndex].status.isFinished { markOpen(childId: childId, key: entry.key, batchId: nil) }
+                }
+                batch.summary = Self.summary(batch.items)
+                batch.done = batch.items.allSatisfy { $0.status.isFinished }
+                batches[batchId] = batch
+            }
+        }
+        protectionsByChild[childId] = list
+        if full {
+            fullReportRequested.remove(deviceId)
+            // A check waiting on this device is complete.
+            for (runId, _) in checkRuns { checkRuns[runId] = max(checkRuns[runId] ?? 0, 1) }
+        }
+        touchDevice(deviceId)
+        return ignored
+    }
+
+    private var reportedUsage: [String: Int] = [:]
+
+    func recordDeviceUsage(deviceId: String, usage: UsageRequest) {
+        guard let childId = childId(ofDevice: deviceId) else { return }
+        // Only today's total shows on the parent's dashboard; older days just land in history.
+        guard usage.date == UsageTicks.localDate() else { return }
+        reportedUsage[childId] = usage.totalMinutes
+        refreshSummary(childId)
+    }
+
+    func recordDeviceLocation(deviceId: String, fix: LocationFix) {
+        lastFixes[deviceId] = fix
+        touchDevice(deviceId)
+    }
+
+    func recordDeviceEvent(deviceId: String, event: DeviceEvent) -> EventResponse {
+        guard let childId = childId(ofDevice: deviceId), let child = summaries.first(where: { $0.id == childId }) else {
+            return EventResponse(ok: true, approval: nil, duplicate: nil)
+        }
+        let deviceName = devicesByChild[childId]?.first { $0.id == deviceId }?.name ?? "the device"
+        switch event.type {
+        case .appRequested:
+            guard let name = event.app else { return EventResponse(ok: true, approval: nil, duplicate: nil) }
+            if let existing = appsByChild[childId]?.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+                if existing.approval == .blocked, let index = appsByChild[childId]?.firstIndex(where: { $0.id == existing.id }) {
+                    appsByChild[childId]?[index].requested = true
+                }
+                if existing.approval != .pending { return EventResponse(ok: true, approval: existing.approval, duplicate: nil) }
+            } else {
+                appsByChild[childId, default: []].append(app(name, .pending, limit: nil, today: 0))
+            }
+            alertsList.insert(makeAlert(childId: childId, deviceId: deviceId, severity: .attention, category: .apps, icon: "app-window", title: "App approval requested", body: "\(child.name) asked to use \(name) on \(deviceName).", subject: deviceName, age: 0, action: AlertAction(type: "REVIEW_APPS", label: "Review request", childId: childId, key: nil, deviceId: nil)), at: 0)
+            return EventResponse(ok: true, approval: nil, duplicate: nil)
+        case .appInstalled:
+            guard let name = event.app else { break }
+            if appsByChild[childId]?.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) != true {
+                appsByChild[childId, default: []].append(app(name, .allowed, limit: nil, today: 0))
+                alertsList.insert(makeAlert(childId: childId, deviceId: deviceId, severity: .info, category: .apps, icon: "app-window", title: "New app installed", body: "\(name) was installed on \(deviceName).", subject: deviceName, age: 0, dismissible: true, action: AlertAction(type: "REVIEW_APPS", label: "Review apps", childId: childId, key: nil, deviceId: nil)), at: 0)
+            }
+        case .appBlocked:
+            alertsList.insert(makeAlert(childId: childId, deviceId: deviceId, severity: .info, category: .apps, icon: "app-window", title: "App blocked", body: "\(event.app ?? "An app") was blocked on \(deviceName).", subject: deviceName, age: 0, dismissible: true, action: nil), at: 0)
+        case .limitReached:
+            alertsList.insert(makeAlert(childId: childId, deviceId: deviceId, severity: .info, category: .screenTime, icon: "hourglass", title: "Screen time limit reached", body: "\(child.name) used today's screen time on \(deviceName).", subject: deviceName, age: 0, dismissible: true, action: AlertAction(type: "VIEW_SCREEN_TIME", label: "View screen time", childId: childId, key: nil, deviceId: nil)), at: 0)
+        }
+        return EventResponse(ok: true, approval: nil, duplicate: nil)
     }
 }

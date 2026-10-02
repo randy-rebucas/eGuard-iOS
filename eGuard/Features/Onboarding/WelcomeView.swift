@@ -81,7 +81,9 @@ struct WelcomeView: View {
         }
         .background(EGuardColors.heroGradient.ignoresSafeArea())
         .navigationTitle(OnboardingStep.welcome.title)
-        .toolbar(.hidden, for: .navigationBar)
+        // Pushed from "Who's using this device?", the back button lets the person choose again.
+        .toolbar(model.mode == .unset ? .visible : .hidden, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

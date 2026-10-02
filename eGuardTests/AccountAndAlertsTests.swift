@@ -93,11 +93,279 @@ struct AccountTests {
         #expect(AppInfo.compare("2.0", "2") == 0)
     }
 
-    @Test func appleSignInRetriesWithGuardianConfirmation() async throws {
-        let model = AppModel.mock()
-        let isNew = try await model.signInWithApple(identityToken: "eyJhbGciOi.apple-token", fullName: "Randy Cruz")
-        #expect(isNew)
+    @Test func appleSignInAsksForGuardianConfirmationBeforeCreatingAnAccount() async throws {
+        let api = MockEGuardAPI.empty()
+        let model = AppModel.mock(api: api, mode: .unset)
+        let nonce = AppleNonce()
+        do {
+            _ = try await model.signInWithApple(identityToken: "eyJhbGciOi.apple-token", fullName: "Randy Cruz", nonce: nonce, guardianConfirmed: false)
+            Issue.record("A new sign-up must ask the guardian question first")
+        } catch let error as APIError {
+            #expect(error.code == "guardian_required")
+        }
+        #expect(!model.isSignedIn)
+        let outcome = try await model.signInWithApple(identityToken: "eyJhbGciOi.apple-token", fullName: "Randy Cruz", nonce: nonce, guardianConfirmed: true)
+        #expect(outcome == .signedIn(isNew: true))
+        #expect(api.lastSocialNonce == nonce.raw)
         #expect(model.user?.isEmailVerified == true)
+        #expect(model.user?.canUsePassword == false)
+        #expect(model.mode == .parent)
+    }
+
+    @Test func appleNonceIsHashedForAppleAndDroppedForOlderServers() async throws {
+        let nonce = AppleNonce()
+        #expect(nonce.raw.count == 64)
+        #expect(nonce.hashed.count == 64)
+        #expect(nonce.hashed != nonce.raw)
+        #expect(AppleNonce().raw != nonce.raw)
+        #expect(AppleNonce(raw: "abc").hashed == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+
+        let api = MockEGuardAPI.empty()
+        api.rejectsNonce = true
+        let model = AppModel.mock(api: api, mode: .unset)
+        let outcome = try await model.signInWithApple(identityToken: "eyJhbGciOi.apple-token", fullName: "Randy Cruz", nonce: nonce, guardianConfirmed: true)
+        #expect(outcome == .signedIn(isNew: true))
+        #expect(api.lastSocialNonce == nil)
+    }
+
+    @Test func twoStepVerificationGatesSignIn() async throws {
+        let api = MockEGuardAPI.seeded()
+        let model = AppModel.mock(api: api, signedIn: true)
+        let setup = try await api.setupTwoFactor()
+        #expect(setup.uri.hasPrefix("otpauth://"))
+        let codes = try await api.confirmTwoFactor(code: MockEGuardAPI.authenticatorCode)
+        #expect(codes.count == 10)
+        await model.signOut()
+        #expect(model.mode == .unset)
+
+        guard case .twoFactorRequired(let challenge) = try await model.signIn(email: "randy@example.com", password: "ChangeMe123!") else {
+            Issue.record("Expected a two-step challenge")
+            return
+        }
+        #expect(!model.isSignedIn)
+        await #expect(throws: APIError.self) {
+            _ = try await model.completeTwoFactor(challenge: challenge, code: "000000")
+        }
+        let response = try await model.completeTwoFactor(challenge: challenge, code: codes[0])
+        #expect(response.usedRecoveryCode == true)
+        #expect(response.recoveryCodesLeft == 9)
+        #expect(model.isSignedIn)
+        #expect(model.mode == .parent)
+    }
+
+    @Test func forgotPasswordLinkSetsAPasswordAndSignsIn() async throws {
+        let api = MockEGuardAPI.seeded()
+        let model = AppModel.mock(api: api, mode: .unset)
+        let sent = try await api.forgotPassword(email: "RANDY@example.com")
+        #expect(sent.message?.isEmpty == false)
+        let token = try #require(api.lastLinkToken)
+        await #expect(throws: APIError.self) {
+            _ = try await model.resetPassword(token: token, password: "short")
+        }
+        #expect(try await model.resetPassword(token: token, password: "brand-new-password") == .signedIn(isNew: false))
+        #expect(model.isSignedIn)
+        // The link works once.
+        await #expect(throws: APIError.self) {
+            _ = try await model.resetPassword(token: token, password: "brand-new-password")
+        }
+    }
+
+    @Test func invitationsReplaceTemporaryPasswords() async throws {
+        let api = MockEGuardAPI.seeded()
+        let sent = try await api.inviteMember(name: "Jo Cruz", email: "jo@example.com")
+        #expect(sent.pending == true)
+        #expect(try await api.family().members.first { $0.id == sent.id }?.isPending == true)
+        let token = try #require(api.lastLinkToken)
+        let preview = try await api.invitation(token: token)
+        #expect(preview.familyName == "Cruz Family")
+
+        let model = AppModel.mock(api: api, mode: .unset)
+        try await model.acceptInvitation(token: token, password: "jo-chooses-this-1")
+        #expect(model.user?.email == "jo@example.com")
+        #expect(model.user?.isAdmin == false)
+        #expect(model.user?.isEmailVerified == true)
+    }
+
+    @Test func deletionsCarryTheRightConfirmation() throws {
+        let encoder = JSONEncoder()
+        #expect(String(data: try encoder.encode(DeletionConfirmation.password("pw")), encoding: .utf8) == #"{"password":"pw"}"#)
+        #expect(String(data: try encoder.encode(DeletionConfirmation.typedDelete), encoding: .utf8) == #"{"confirm":"DELETE"}"#)
+
+        var user = APIUser(id: "u", name: "Randy", firstName: "Randy", email: "r@e.x", role: .familyAdmin, family: FamilyRef(id: "f", name: "F", timezone: "Asia/Manila"),
+                           notifications: NotificationPrefs(notifyPush: true, notifyEmail: true, notifyApproval: true, weeklySummary: true), twoFactor: false, hasPassword: true, emailVerified: true, createdAt: .now)
+        #expect(DeletionConfirmation.make(user: user, input: "secret") == .password("secret"))
+        #expect(DeletionConfirmation.make(user: user, input: "") == nil)
+        user.hasPassword = false
+        #expect(DeletionConfirmation.make(user: user, input: "DELETE") == .typedDelete)
+        #expect(DeletionConfirmation.make(user: user, input: "delete") == nil)
+    }
+
+    @Test func unpairingNeedsTheParentsPassword() async throws {
+        let api = MockEGuardAPI.seeded()
+        let device = try #require(try await api.devices().devices.first)
+        await #expect(throws: APIError.self) {
+            try await api.unpairDevice(id: device.id, confirmation: .password("wrong"))
+        }
+        await #expect(throws: APIError.self) {
+            try await api.unpairDevice(id: device.id, confirmation: .typedDelete)
+        }
+        try await api.unpairDevice(id: device.id, confirmation: .password("ChangeMe123!"))
+        #expect(try await api.devices().devices.contains { $0.id == device.id } == false)
+        #expect(try await api.alerts(filter: .devices, childId: nil, includeResolved: false, before: nil).alerts.first?.title == "Device removed")
+    }
+
+    @Test func deletingTheAdminAccountEndsTheFamilyAndTheMode() async throws {
+        let api = MockEGuardAPI.seeded()
+        let model = AppModel.mock(api: api, signedIn: true)
+        let result = try await model.deleteAccount(confirmation: .password("ChangeMe123!"))
+        #expect(result.deleted == "family")
+        #expect(!model.isSignedIn)
+        #expect(model.mode == .unset)
+    }
+
+    @Test func loginResultDecodesBothShapes() throws {
+        let decoder = APIClient.makeDecoder()
+        let challenge = try decoder.decode(LoginResult.self, from: Data(#"{"twoFactorRequired":true,"challenge":"abc","expiresAt":"2026-10-27T05:59:56.772Z"}"#.utf8))
+        guard case .twoFactorRequired(let value) = challenge else { Issue.record("Expected a challenge"); return }
+        #expect(value.challenge == "abc")
+        let session = try decoder.decode(LoginResult.self, from: Data(#"""
+        {"token":"t","expiresAt":"2026-10-27T05:59:56.772Z","user":{"id":"u","name":"Randy Cruz","firstName":"Randy","email":"r@e.x","role":"FAMILY_ADMIN","emailVerified":true,"family":{"id":"f","name":"Cruz Family","timezone":"Asia/Manila"},"notifications":{"notifyPush":true,"notifyEmail":true,"notifyApproval":true,"weeklySummary":true},"hasPassword":false,"twoFactor":false,"createdAt":"2026-09-27T05:56:40.493Z"}}
+        """#.utf8))
+        #expect(session.auth?.user.canUsePassword == false)
+    }
+
+    @Test func unknownServerEnumValuesFallBackInsteadOfFailing() throws {
+        let decoder = APIClient.makeDecoder()
+        struct Box: Decodable { let status: ChildStatus; let severity: AlertSeverity; let category: APIAlertCategory; let check: CheckStatus }
+        let box = try decoder.decode(Box.self, from: Data(#"{"status":"brand_new","severity":"URGENT","category":"BILLING","check":"MAYBE"}"#.utf8))
+        #expect(box.status == .attention)
+        #expect(box.severity == .info)
+        #expect(box.category == .system)
+        #expect(box.check == .warning)
+    }
+
+    @Test func healthWordingNeverSaysVerifiedWhileADeviceIsOffline() {
+        #expect(HealthScore(score: 10, total: 10, offline: 0, verified: true).grade == "Fully protected")
+        #expect(HealthScore(score: 10, total: 10, offline: 1, verified: false).grade == "Last known: all set")
+        #expect(HealthScore(score: 10, total: 10, offline: 1, verified: false).isVerified == false)
+        #expect(HealthScore(score: 0, total: 0).grade == "No devices yet")
+        #expect(HealthScore(score: 0, total: 0).text == "–")
+        #expect(HealthScore(score: 6, total: 10).grade == "Needs attention")
+    }
+
+    @Test func pushAlertsOpenOnlyOnTheParentSide() async throws {
+        let api = MockEGuardAPI.seeded()
+        let model = AppModel.mock(api: api, signedIn: true)
+        let alert = try #require(try await api.alerts(filter: .all, childId: nil, includeResolved: false, before: nil).alerts.first { !$0.read })
+        let unreadBefore = try await api.unreadCount()
+
+        #expect(PushAlert(userInfo: ["type": "alert", "alertId": alert.id, "category": "PROTECTION"]) == PushAlert(alertId: alert.id, category: "PROTECTION"))
+        #expect(PushAlert(userInfo: ["type": "news", "alertId": alert.id]) == nil)
+
+        model.pendingPushAlert = PushAlert(alertId: alert.id, category: alert.category.rawValue, childId: alert.childId)
+        let opened = await model.consumePushAlert()
+        #expect(opened?.alertId == alert.id)
+        #expect(model.pendingPushAlert == nil)
+        #expect(try await api.unreadCount() < unreadBefore)
+
+        // Tokens register only for a signed-in parent, and a rotated token re-registers.
+        model.updatePushToken("fcm-token-1")
+        model.updatePushToken("fcm-token-1")
+        await model.signOut()
+        model.pendingPushAlert = PushAlert(alertId: alert.id)
+        #expect(await model.consumePushAlert() == nil)
+    }
+
+    @Test func deepLinksParseOnlyKnownParentLinks() {
+        #expect(DeepLink(url: URL(string: "https://www.eguard.family/verify-email?token=abc")!) == .verifyEmail(token: "abc"))
+        #expect(DeepLink(url: URL(string: "https://www.eguard.family/reset-password?token=r1")!) == .resetPassword(token: "r1"))
+        #expect(DeepLink(url: URL(string: "eguard://accept-invite?token=i1")!) == .acceptInvite(token: "i1"))
+        #expect(DeepLink(url: URL(string: "https://www.eguard.family/privacy")!) == nil)
+        #expect(DeepLink(url: URL(string: "https://www.eguard.family/verify-email")!) == nil)
+    }
+}
+
+@Suite("Plan entitlements and limits")
+struct PlanGatingTests {
+    @Test func thirtyDayReportsAndLocationFollowThePlan() async throws {
+        let api = MockEGuardAPI.seeded()
+        let mia = try #require(try await api.children().first)
+        _ = try await api.screenTime(childId: mia.id, period: .week)
+        do {
+            _ = try await api.screenTime(childId: mia.id, period: .month)
+            Issue.record("30d needs advanced reports")
+        } catch let error as APIError {
+            #expect(error.code == "plan_required")
+        }
+        api.entitlements.advancedReports = true
+        #expect(try await api.screenTime(childId: mia.id, period: .month).days.count == 30)
+
+        api.entitlements.locationSharing = false
+        await #expect(throws: APIError.self) { _ = try await api.location(childId: mia.id) }
+        #expect(try await api.child(id: mia.id).location.locationState == .planRequired)
+    }
+
+    @Test func appMonitoringLimitListsRequestsFirst() async throws {
+        let api = MockEGuardAPI.seeded()
+        let mia = try #require(try await api.children().first)
+        api.entitlements.appMonitoringLimit = 3
+        let response = try await api.apps(childId: mia.id, filter: nil)
+        #expect(response.apps.count == 3)
+        #expect(response.limited?.hidden == 5)
+        #expect(response.apps.first?.isRequested == true)
+        // A blocked app the child asked for again stays blocked but shows Approve/Decline.
+        let snapchat = try #require(try await api.apps(childId: mia.id, filter: .pending).apps.first { $0.name == "Snapchat" })
+        #expect(snapchat.approval == .blocked && snapchat.isRequested)
+        _ = try await api.updateApp(id: snapchat.id, patch: AppPatch(approval: .blocked))
+        #expect(try await api.apps(childId: mia.id, filter: .pending).apps.contains { $0.name == "Snapchat" } == false)
+    }
+
+    @Test func familyAndSubscriptionShareEntitlements() async throws {
+        let api = MockEGuardAPI.seeded()
+        let family = try await api.family()
+        #expect(family.plan == "eGuard Plus")
+        #expect(family.slotsUsed == family.deviceCount + 1)
+        let subscription = try await api.subscription()
+        #expect(subscription.planId == "PLUS")
+        #expect(subscription.entitlements == family.entitlements)
+        #expect(subscription.usage.childLimit == 5)
+        #expect(!subscription.isSponsored)
+        #expect(subscription.upgrade == nil)
+    }
+
+    @Test func organizationsJoinAndLeaveWithACode() async throws {
+        let api = MockEGuardAPI.seeded()
+        #expect(try await api.organizations().organizations.count == 1)
+        let preview = try await api.previewOrganization(code: "cmty-4kid")
+        #expect(preview.name == "Leyte Parents Circle" && !preview.alreadyJoined)
+        let joined = try await api.joinOrganization(code: "CMTY4KID")
+        #expect(joined.organizations?.count == 2)
+        await #expect(throws: APIError.self) { _ = try await api.previewOrganization(code: "NOPE0000") }
+        _ = try await api.leaveOrganization(id: "org_2")
+        #expect(try await api.organizations().organizations.count == 1)
+    }
+
+    @Test func browserRequestsResolveAndAlwaysUpdatesThePolicy() async throws {
+        let api = MockEGuardAPI.seeded()
+        let sophie = try #require(try await api.children().first { $0.name == "Sophie" })
+        let requests = try await api.browserAccessRequests(childId: sophie.id)
+        let request = try #require(requests.pending.first)
+        let before = try await api.browserPolicy(childId: sophie.id)
+        let decided = try await api.decideBrowserAccessRequest(id: request.id, decision: .approve(.always))
+        #expect(decided.status == "APPROVED")
+        let after = try await api.browserPolicy(childId: sophie.id)
+        #expect(after.allowedDomains.contains("discord.com"))
+        #expect(after.version == before.version + 1)
+        await #expect(throws: APIError.self) {
+            _ = try await api.decideBrowserAccessRequest(id: request.id, decision: .deny)
+        }
+        // A stale save is refused instead of undoing the newer change.
+        await #expect(throws: APIError.self) {
+            _ = try await api.updateBrowserPolicy(childId: sophie.id, policy: before.update)
+        }
+        #expect(try await api.browsers().count == 1)
+        try await api.removeBrowser(id: try #require(try await api.browsers().first?.id), confirmation: .password("ChangeMe123!"))
+        #expect(try await api.browsers().isEmpty)
     }
 }
 

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		53F2D5C6306FDC070082D304 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = 53F2D5C5306FDC070082D304 /* FirebaseMessaging */; };
 		53FB0F903067C62800FCDAEB /* DeviceActivity.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 53FB0F8F3067C62800FCDAEB /* DeviceActivity.framework */; };
 		53FB0F983067C62800FCDAEB /* eGuardActivityMonitor.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 53FB0F8D3067C62800FCDAEB /* eGuardActivityMonitor.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		53FB0FAE3067C62900FCDAEB /* eGuardActivityReport.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 53FB0FA23067C62900FCDAEB /* eGuardActivityReport.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -157,6 +158,7 @@
 		000000000000000130000000 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				53F2D5C6306FDC070082D304 /* FirebaseMessaging in Frameworks */,
 			);
 		};
 		53FB0F8A3067C62800FCDAEB /* Frameworks */ = {
@@ -251,6 +253,9 @@
 				000000000000000000000010 /* eGuard */,
 			);
 			name = eGuard;
+			packageProductDependencies = (
+				53F2D5C5306FDC070082D304 /* FirebaseMessaging */,
+			);
 			productName = eGuard;
 			productReference = 000000000000000000000120 /* eGuard.app */;
 			productType = "com.apple.product-type.application";
@@ -390,6 +395,9 @@
 			);
 			mainGroup = 000000000000000000000001;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				53F2D5C4306FD9800082D304 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
 			projectDirPath = "";
@@ -645,7 +653,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = eGuard;
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "eGuard shows where this device is on the Location screen while the app is open and location sharing is turned on. Location stays on this device.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "When this is a child's device and a parent turned on location sharing, eGuard sends the device's location to the parent's eGuard app. Nothing is collected on a parent's phone.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -687,7 +695,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = eGuard;
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "eGuard shows where this device is on the Location screen while the app is open and location sharing is turned on. Location stays on this device.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "When this is a child's device and a parent turned on location sharing, eGuard sends the device's location to the parent's eGuard app. Nothing is collected on a parent's phone.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -1050,6 +1058,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		53F2D5C4306FD9800082D304 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.19.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		53F2D5C5306FDC070082D304 /* FirebaseMessaging */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 53F2D5C4306FD9800082D304 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseMessaging;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 000000000000000000000000 /* Project object */;
 }

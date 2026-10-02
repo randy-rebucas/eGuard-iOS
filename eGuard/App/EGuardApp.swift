@@ -4,23 +4,23 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
-/// Receives the APNs device token so it can be registered with `POST /me/push-tokens`.
+/// Starts Firebase and hands the APNs token to it. The FCM token Firebase returns is what the server
+/// registers with `POST /me/push-tokens`.
 final class PushRegistrationDelegate: NSObject, UIApplicationDelegate {
-    /// The latest hex-encoded APNs token, observed by the app scene.
-    static let relay = PushTokenRelay()
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        if !ProcessInfo.processInfo.arguments.contains("-uiTesting") {
+            PushService.shared.configure()
+        }
+        return true
+    }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        Self.relay.token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        PushService.shared.didReceiveAPNsToken(deviceToken)
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         EGuardLog.app.error("Push registration failed: \(error.localizedDescription)")
     }
-}
-
-@Observable
-final class PushTokenRelay {
-    var token: String?
 }
 
 @main
@@ -32,10 +32,18 @@ struct EGuardApp: App {
         WindowGroup {
             RootView()
                 .environment(model)
-                .onChange(of: PushRegistrationDelegate.relay.token) { _, token in
+                .onOpenURL { url in model.open(url) }
+                .onChange(of: PushService.shared.fcmToken) { _, token in
                     if let token { model.updatePushToken(token) }
                 }
+                .onChange(of: PushService.shared.openedAlert) { _, alert in
+                    guard let alert else { return }
+                    PushService.shared.openedAlert = nil
+                    model.pendingPushAlert = alert
+                }
                 .task {
+                    // Pushes are for parents. A child's device never registers.
+                    guard model.mode != .child else { return }
                     // Registration is silent when notifications were already allowed; the token arrives via the delegate.
                     let settings = await UNUserNotificationCenter.current().notificationSettings()
                     if settings.authorizationStatus == .authorized {

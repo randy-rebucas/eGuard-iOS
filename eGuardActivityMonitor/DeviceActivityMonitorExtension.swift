@@ -13,18 +13,23 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
     override func intervalDidStart(for activity: DeviceActivityName) {
         super.intervalDidStart(for: activity)
 
-        switch activity {
-        case EGuardShared.Activity.downtime:
+        if EGuardShared.Activity.isDowntime(activity) {
             downtimeStore.shield.applicationCategories = .all()
             downtimeStore.shield.webDomainCategories = .all()
             notify(
                 identifier: "downtime.started",
-                title: "Downtime started",
-                body: "Apps are shielded until the downtime schedule ends."
+                title: "Bedtime started",
+                body: "Apps are paused until the bedtime schedule ends."
             )
+            return
+        }
+        switch activity {
         case EGuardShared.Activity.dailyLimits:
             // A new day begins: yesterday's used-up allowances are released.
             limitsStore.clearAllSettings()
+        case EGuardShared.Activity.screenTime:
+            limitsStore.clearAllSettings()
+            recordUsage(minutes: 0)
         default:
             break
         }
@@ -33,10 +38,12 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
     override func intervalDidEnd(for activity: DeviceActivityName) {
         super.intervalDidEnd(for: activity)
 
-        switch activity {
-        case EGuardShared.Activity.downtime:
+        if EGuardShared.Activity.isDowntime(activity) {
             downtimeStore.clearAllSettings()
-        case EGuardShared.Activity.dailyLimits:
+            return
+        }
+        switch activity {
+        case EGuardShared.Activity.dailyLimits, EGuardShared.Activity.screenTime:
             limitsStore.clearAllSettings()
         default:
             break
@@ -45,7 +52,12 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
 
     override func eventDidReachThreshold(_ event: DeviceActivityEvent.Name, activity: DeviceActivityName) {
         super.eventDidReachThreshold(event, activity: activity)
-        guard activity == EGuardShared.Activity.dailyLimits else { return }
+
+        // A usage rung: the counted apps have been used for at least this long today. No shield, no notice.
+        if let minutes = EGuardShared.Event.usageMinutes(from: event) {
+            recordUsage(minutes: minutes)
+            return
+        }
 
         let key: String
         let title: String
@@ -56,6 +68,11 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
         case EGuardShared.Event.socialApps:
             key = EGuardShared.DefaultsKey.socialAppsSelection
             title = "Social apps allowance used"
+        case EGuardShared.Event.screenTime:
+            key = EGuardShared.DefaultsKey.screenTimeSelection
+            title = "Screen time limit reached"
+            recordLimitReached()
+            recordUsage(minutes: EGuardShared.sharedDefaults?.integer(forKey: EGuardShared.DefaultsKey.screenTimeMinutes) ?? 0)
         default:
             return
         }
@@ -68,17 +85,17 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
         notify(
             identifier: "limit.\(event.rawValue)",
             title: title,
-            body: "The selected apps are shielded until tomorrow."
+            body: "The selected apps are paused until tomorrow."
         )
     }
 
     override func intervalWillStartWarning(for activity: DeviceActivityName) {
         super.intervalWillStartWarning(for: activity)
-        guard activity == EGuardShared.Activity.downtime else { return }
+        guard EGuardShared.Activity.isDowntime(activity) else { return }
         notify(
             identifier: "downtime.warning",
-            title: "Downtime starts soon",
-            body: "Apps will be shielded in about five minutes."
+            title: "Bedtime starts soon",
+            body: "Apps will be paused in about five minutes."
         )
     }
 
@@ -107,6 +124,30 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
         let existingDomains = limitsStore.shield.webDomains ?? []
         let domains = existingDomains.union(selection.webDomainTokens)
         limitsStore.shield.webDomains = domains.isEmpty ? nil : domains
+    }
+
+    /// Queues a `LIMIT_REACHED` event for the app to send to the eGuard server on its next sync.
+    /// The extension itself never talks to the network.
+    private func recordLimitReached() {
+        guard let defaults = EGuardShared.sharedDefaults else { return }
+        let minutes = defaults.integer(forKey: EGuardShared.DefaultsKey.screenTimeMinutes)
+        var pending = (try? JSONSerialization.jsonObject(with: defaults.data(forKey: EGuardShared.DefaultsKey.pendingEvents) ?? Data("[]".utf8))) as? [[String: Any]] ?? []
+        pending.append(["type": "LIMIT_REACHED", "minutes": minutes, "eventId": UUID().uuidString])
+        if let data = try? JSONSerialization.data(withJSONObject: pending) {
+            defaults.set(data, forKey: EGuardShared.DefaultsKey.pendingEvents)
+        }
+    }
+
+    /// Stores today's usage floor for the app to send as `/usage` on its next sync. Only ever moves up
+    /// within a day; a new day's interval start resets it to zero.
+    private func recordUsage(minutes: Int) {
+        guard let defaults = EGuardShared.sharedDefaults else { return }
+        let parts = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        let today = String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+        let sameDay = defaults.string(forKey: EGuardShared.DefaultsKey.usageDate) == today
+        let previous = sameDay ? defaults.integer(forKey: EGuardShared.DefaultsKey.usageMinutes) : 0
+        defaults.set(today, forKey: EGuardShared.DefaultsKey.usageDate)
+        defaults.set(minutes == 0 && !sameDay ? 0 : max(previous, minutes), forKey: EGuardShared.DefaultsKey.usageMinutes)
     }
 
     /// Posts a local notification if the parent allowed them. Content never includes app names.

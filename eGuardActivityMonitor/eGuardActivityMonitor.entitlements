@@ -6,7 +6,7 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.devplaceholder.eguard</string>
+		<string>group.com.devcom.eguard</string>
 	</array>
 </dict>
 </plist>

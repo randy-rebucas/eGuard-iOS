@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// 17 Your plan, from `GET /subscription`. Payments live in the web app, so this screen is
-/// read-only: it shows the current plan, what it includes, and device usage. Any plan change
-/// goes through support.
+/// read-only: it shows the current plan, what it includes, and usage. Any plan change
+/// goes through support. No upgrade button and no link to the website.
 struct SubscriptionView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
@@ -32,15 +32,22 @@ struct SubscriptionView: View {
         state = await load { try await model.api.subscription() }
     }
 
+    private func statusLine(_ info: SubscriptionInfo) -> String {
+        var parts: [String] = [info.isActive ? "Active Plan" : "Expired"]
+        if info.isSponsored { parts.append("Sponsored plan") } else if let store = info.store { parts.append(store.title) }
+        if let renews = info.renewsLabel { parts.append(renews) }
+        return parts.joined(separator: " · ")
+    }
+
     private func planCard(_ info: SubscriptionInfo) -> some View {
         // Every feature is listed. Ones outside the plan are marked neutrally: no prices, no upgrade
         // call to action, and no link to a web checkout, which the App Store does not allow here.
         EGuardCard {
             HStack(spacing: EGuardSpacing.md) {
-                IconTile(symbolName: "rosette", tint: EGuardColors.tileYellow, size: 56)
+                IconTile(symbolName: info.isSponsored ? "gift.fill" : "rosette", tint: EGuardColors.tileYellow, size: 56)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(info.plan).font(EGuardTypography.title3)
-                    Text(info.isActive ? "Active Plan" : "Expired")
+                    Text(statusLine(info))
                         .font(EGuardTypography.caption)
                         .foregroundStyle(info.isActive ? EGuardColors.success : EGuardColors.danger)
                 }
@@ -79,15 +86,25 @@ struct SubscriptionView: View {
     }
 
     private func planUsage(_ info: SubscriptionInfo) -> some View {
-        VStack(alignment: .leading, spacing: EGuardSpacing.xs) {
+        VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
             SectionHeader(title: "Plan Usage")
-            Text("\(info.usage.devicesUsed) of \(info.usage.deviceLimit) devices used")
-                .font(EGuardTypography.label)
+            usageRow(label: "\(info.usage.children) of \(info.usage.childLimit.map(String.init) ?? "–") children", used: info.usage.children, limit: info.usage.childLimit)
+            usageRow(label: "\(info.usage.devicesUsed) of \(info.usage.deviceLimit) devices used", used: info.usage.devicesUsed, limit: info.usage.deviceLimit)
+            Text("Devices include phones, tablets and connected browsers.")
+                .font(EGuardTypography.caption)
                 .foregroundStyle(EGuardColors.textSecondary)
-            ProgressView(value: Double(info.usage.devicesUsed), total: Double(max(info.usage.deviceLimit, 1)))
-                .tint(EGuardColors.primary)
         }
         .padding(.horizontal, EGuardSpacing.xxs)
+    }
+
+    private func usageRow(label: String, used: Int, limit: Int?) -> some View {
+        VStack(alignment: .leading, spacing: EGuardSpacing.xxs) {
+            Text(label)
+                .font(EGuardTypography.label)
+                .foregroundStyle(EGuardColors.textSecondary)
+            ProgressView(value: Double(min(used, limit ?? used)), total: Double(max(limit ?? used, 1)))
+                .tint(EGuardColors.primary)
+        }
         .accessibilityElement(children: .combine)
     }
 }

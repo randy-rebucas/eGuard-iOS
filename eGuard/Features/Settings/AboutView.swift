@@ -30,7 +30,9 @@ struct AboutView: View {
                 Divider()
                 EGuardValueRow(label: "Platform", value: "iOS · Screen Time frameworks")
                 Divider()
-                EGuardValueRow(label: "Data storage", value: "This device only")
+                EGuardValueRow(label: "Data storage", value: "Your family's eGuard account")
+                Divider()
+                EGuardValueRow(label: "Analytics or ads", value: "None")
             }
 
             EGuardCard {
@@ -61,13 +63,13 @@ struct AboutView: View {
                     openURL(EGuardPublisher.termsURL)
                 }
                 Divider()
-                EGuardNavRow(title: "Delete your account", subtitle: "Request deletion on eguard.family", symbolName: "trash.fill", tint: EGuardColors.danger) {
+                EGuardNavRow(title: "Delete your account", subtitle: "In Settings › Account, or on eguard.family", symbolName: "trash.fill", tint: EGuardColors.danger) {
                     openURL(EGuardPublisher.deleteAccountURL)
                 }
             }
 
             EGuardCard {
-                Text("eGuard helps parents configure, manage, and verify Apple's built-in parental controls with clear, honest status reporting. It never claims a protection is active unless Apple's frameworks confirm it.")
+                Text("eGuard helps parents configure, manage, and verify their children's device protections with clear, honest status reporting. A setting is only shown as saved once the child's device has verified it. The same app runs on a child's device to apply those settings.")
                     .font(EGuardTypography.callout)
                     .foregroundStyle(EGuardColors.textSecondary)
             }

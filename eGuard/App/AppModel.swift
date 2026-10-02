@@ -14,10 +14,19 @@ final class AppModel {
         case updateRequired(minimum: String)
     }
 
+    /// What a sign-in call led to: a session, or a two-step verification challenge to answer first.
+    enum SignInOutcome: Equatable {
+        case signedIn(isNew: Bool)
+        case twoFactorRequired(TwoFactorChallenge)
+    }
+
     // MARK: Dependencies
 
     let api: EGuardAPIService
     let sessionStore: SessionStore
+    let modeStore: ModeStore
+    /// The child-device side of the app. Active only in child device mode.
+    let childDevice: ChildDeviceModel
     let authorization: ParentalControlAuthorizationService
     let restrictions: RestrictionService
     let schedules: ActivityScheduleService
@@ -44,6 +53,10 @@ final class AppModel {
     private(set) var sessionEndedMessage: String?
     /// Child photos by versioned URL.
     var photoCache: [String: Data] = [:]
+    /// A link from an eGuard email waiting to be handled once the UI is ready.
+    var pendingDeepLink: DeepLink?
+    /// An alert push the parent tapped, waiting for the UI to open it.
+    var pendingPushAlert: PushAlert?
 
     // MARK: Local state (device-side role and offline cache)
 
@@ -62,6 +75,7 @@ final class AppModel {
 
     var isOnline: Bool { network?.isOnline ?? true }
     var isSignedIn: Bool { sessionStore.session != nil }
+    var mode: AppMode { modeStore.mode }
     var children: [ChildSummary] { dashboard?.children ?? [] }
     var hasChildren: Bool { !children.isEmpty }
     /// The main tabs show once the parent is signed in and has added a child.
@@ -78,6 +92,8 @@ final class AppModel {
     init(
         api: EGuardAPIService,
         sessionStore: SessionStore,
+        modeStore: ModeStore,
+        childDevice: ChildDeviceModel,
         authorization: ParentalControlAuthorizationService,
         restrictions: RestrictionService,
         schedules: ActivityScheduleService,
@@ -89,6 +105,8 @@ final class AppModel {
     ) {
         self.api = api
         self.sessionStore = sessionStore
+        self.modeStore = modeStore
+        self.childDevice = childDevice
         self.authorization = authorization
         self.restrictions = restrictions
         self.schedules = schedules
@@ -130,6 +148,8 @@ final class AppModel {
             let model = mock(
                 api: seeded ? .seeded() : .empty(),
                 signedIn: seeded,
+                // UI tests start on the parent side unless they ask for the mode chooser.
+                mode: arguments.contains("-modeUnset") ? .unset : .parent,
                 authorizationStatus: seeded ? .approved : .notDetermined,
                 authorizationBehavior: arguments.contains("-denyAuthorization") ? .deny : .approve,
                 skipsSplash: true
@@ -151,24 +171,45 @@ final class AppModel {
         )
         let sessionStore = SessionStore.live()
         let client = APIClient(sessionStore: sessionStore)
+        let authorization = FamilyControlsAuthorizationService()
+        let restrictions = ManagedSettingsRestrictionService()
+        let schedules = DeviceActivityScheduleService()
+        let network = NetworkMonitor()
+        let deviceTokenStore = DeviceTokenStore.live()
+        let deviceClient = DeviceAPIClient(tokenStore: deviceTokenStore)
+        let locationReporter = CoreLocationReporter()
+        let childDevice = ChildDeviceModel(
+            api: LiveDeviceAPI(client: deviceClient),
+            tokenStore: deviceTokenStore,
+            enforcer: ScreenTimeEnforcer(restrictions: restrictions, schedules: schedules, authorization: authorization, environment: environment, locationStatus: locationReporter),
+            store: ChildDeviceStore.live(),
+            locationReporter: locationReporter,
+            usageSource: AppGroupUsageSource(),
+            network: network
+        )
         let model = AppModel(
             api: LiveEGuardAPI(client: client),
             sessionStore: sessionStore,
-            authorization: FamilyControlsAuthorizationService(),
-            restrictions: ManagedSettingsRestrictionService(),
-            schedules: DeviceActivityScheduleService(),
+            modeStore: ModeStore.live(),
+            childDevice: childDevice,
+            authorization: authorization,
+            restrictions: restrictions,
+            schedules: schedules,
             systemSettings: SystemSettingsOpener(),
             repository: LocalStateRepository.live(),
             environment: environment,
-            network: NetworkMonitor()
+            network: network
         )
         client.onUnauthorized = { [weak model] error in model?.handleUnauthorized(reason: error.localizedDescription) }
+        deviceClient.onUnauthorized = { [weak childDevice] in childDevice?.handleRemoved() }
+        model.reconcileModeAtLaunch()
         return model
     }
 
     static func mock(
         api mockAPI: MockEGuardAPI? = nil,
         signedIn: Bool = false,
+        mode: AppMode = .parent,
         authorizationStatus: ParentalControlAuthorizationStatus = .notDetermined,
         authorizationBehavior: MockAuthorizationService.Behavior = .approve,
         environment: PlatformEnvironment = .iPhone,
@@ -179,12 +220,29 @@ final class AppModel {
         if signedIn {
             sessionStore.save(MockEGuardAPI.seededSession)
         }
+        let authorization = MockAuthorizationService(status: authorizationStatus, behavior: authorizationBehavior)
+        let restrictions = MockRestrictionService()
+        let schedules = MockActivityScheduleService()
+        let deviceTokenStore = DeviceTokenStore.inMemory()
+        // Each mock model gets its own location reporter so parallel tests never share permission state.
+        let locationReporter = MockLocationReporter()
+        let childDevice = ChildDeviceModel(
+            api: MockDeviceAPI(server: api),
+            tokenStore: deviceTokenStore,
+            enforcer: ScreenTimeEnforcer(restrictions: restrictions, schedules: schedules, authorization: authorization, environment: environment, locationStatus: locationReporter),
+            store: ChildDeviceStore.inMemory(),
+            locationReporter: locationReporter,
+            usageSource: MockUsageSource(),
+            network: nil
+        )
         let model = AppModel(
             api: api,
             sessionStore: sessionStore,
-            authorization: MockAuthorizationService(status: authorizationStatus, behavior: authorizationBehavior),
-            restrictions: MockRestrictionService(),
-            schedules: MockActivityScheduleService(),
+            modeStore: ModeStore.inMemory(mode),
+            childDevice: childDevice,
+            authorization: authorization,
+            restrictions: restrictions,
+            schedules: schedules,
             systemSettings: SystemSettingsOpener(),
             repository: LocalStateRepository.inMemory(),
             environment: environment,
@@ -194,6 +252,49 @@ final class AppModel {
             model.user = api.currentUser
         }
         return model
+    }
+
+    // MARK: Mode
+
+    /// Launch routing from the spec: a stored mode without its credential falls back to the chooser
+    /// (child) or to sign-in (parent). A device token with no mode means a pairing finished mid-switch.
+    func reconcileModeAtLaunch() {
+        switch modeStore.mode {
+        case .child where !childDevice.isPaired:
+            childDevice.forget()
+            modeStore.set(.unset)
+        case .unset where childDevice.isPaired:
+            modeStore.set(.child)
+        case .parent where childDevice.isPaired:
+            // Never hold both credentials. The parent session wins; the device token is dropped.
+            childDevice.forget()
+        default:
+            break
+        }
+    }
+
+    /// The person on the "Who's using this device?" screen picked a side. Nothing is stored until
+    /// sign-in or pairing succeeds, so they can still go back.
+    func chooseParentSide() {
+        // Intentionally empty: `mode` becomes PARENT in `startSession`.
+    }
+
+    /// Pairing succeeded on this device: it is now the child's. Any parent session is ended first, and
+    /// the push token is unregistered so this phone stops receiving the parent's alerts.
+    func enterChildMode() async {
+        if isSignedIn {
+            try? await api.logout(pushToken: pushToken)
+            handleUnauthorized()
+        }
+        PushService.shared.deleteToken()
+        pushToken = nil
+        modeStore.set(.child)
+    }
+
+    /// "Set up eGuard again" after a parent removed this device.
+    func leaveChildMode() {
+        childDevice.forget()
+        modeStore.set(.unset)
     }
 
     /// A signed-in parent with a seeded family, for previews of the main app.
@@ -207,9 +308,15 @@ final class AppModel {
     // MARK: Launch
 
     /// Runs the launch flow: app-info gate, then the dashboard when a session exists.
+    /// In child device mode the device syncs instead; `/app-info` is a parent-side call.
     func bootstrap() async {
         guard bootstrapState != .loading else { return }
         bootstrapState = .loading
+        if mode == .child {
+            await childDevice.syncNow()
+            bootstrapState = .ready
+            return
+        }
         if let info = try? await api.appInfo() {
             appInfo = info
             if info.requiresUpdate(currentVersion: currentVersion) {
@@ -221,6 +328,12 @@ final class AppModel {
             await refreshDashboard()
         }
         bootstrapState = .ready
+    }
+
+    /// Stores a link from an eGuard email. Parent-side screens pick it up; child device mode shows a notice.
+    func open(_ url: URL) {
+        guard let link = DeepLink(url: url) else { return }
+        pendingDeepLink = link
     }
 
     /// Reloads the Home tab data and the unread badge. A 401 signs the parent out.
@@ -266,22 +379,50 @@ final class AppModel {
         try await startSession(response)
     }
 
-    func signIn(email: String, password: String) async throws {
-        let response = try await api.login(email: email, password: password)
+    @discardableResult
+    func signIn(email: String, password: String) async throws -> SignInOutcome {
+        try await finish(try await api.login(email: email, password: password))
+    }
+
+    /// Continue with Apple. Retries with the guardian confirmation only after the caller confirmed it,
+    /// so a brand-new sign-up always sees the parent/guardian (18+) question. The nonce binds the
+    /// identity token to this sign-in; a server that doesn't accept the field yet gets the call again without it.
+    @discardableResult
+    func signInWithApple(identityToken: String, fullName: String?, nonce: AppleNonce?, guardianConfirmed: Bool) async throws -> SignInOutcome {
+        do {
+            return try await finish(try await api.social(provider: .apple, idToken: identityToken, name: fullName, guardian: guardianConfirmed, nonce: nonce?.raw))
+        } catch let error as APIError where nonce != nil && error.status == 400 && error.fieldName == "nonce" {
+            return try await finish(try await api.social(provider: .apple, idToken: identityToken, name: fullName, guardian: guardianConfirmed, nonce: nil))
+        }
+    }
+
+    /// The 6-digit authenticator code (or a recovery code) for a pending two-step challenge.
+    func completeTwoFactor(challenge: TwoFactorChallenge, code: String) async throws -> AuthResponse {
+        let response = try await api.twoFactor(challenge: challenge.challenge, code: code)
+        try await startSession(response)
+        return response
+    }
+
+    /// From a reset link: sets the password and signs in with the session the server returns.
+    @discardableResult
+    func resetPassword(token: String, password: String) async throws -> SignInOutcome {
+        try await finish(try await api.resetPassword(token: token, password: password))
+    }
+
+    /// From an invitation link: the invited parent chooses a password and joins the family.
+    func acceptInvitation(token: String, password: String) async throws {
+        let response = try await api.acceptInvitation(token: token, password: password)
         try await startSession(response)
     }
 
-    /// Continue with Apple. Retries with the guardian confirmation when the server asks for it.
-    @discardableResult
-    func signInWithApple(identityToken: String, fullName: String?) async throws -> Bool {
-        let response: AuthResponse
-        do {
-            response = try await api.social(provider: .apple, idToken: identityToken, name: fullName, guardian: false)
-        } catch let error as APIError where error.code == "guardian_required" {
-            response = try await api.social(provider: .apple, idToken: identityToken, name: fullName, guardian: true)
+    private func finish(_ result: LoginResult) async throws -> SignInOutcome {
+        switch result {
+        case .signedIn(let response):
+            try await startSession(response)
+            return .signedIn(isNew: response.isNew ?? false)
+        case .twoFactorRequired(let challenge):
+            return .twoFactorRequired(challenge)
         }
-        try await startSession(response)
-        return response.isNew ?? false
     }
 
     /// Stores the new session and loads the dashboard. Throws when the server rejects the token it
@@ -291,6 +432,7 @@ final class AppModel {
         sessionStore.save(response.session)
         user = response.user
         sessionEndedMessage = nil
+        modeStore.set(.parent)
         do {
             try await loadDashboard()
         } catch let error as APIError where error.isUnauthorized {
@@ -304,10 +446,20 @@ final class AppModel {
         }
     }
 
-    /// Ends this session on the server and forgets it locally.
+    /// Ends this session on the server and forgets it locally. The install goes back to
+    /// "Who's using this device?", as the spec's Parent → unset transition describes.
     func signOut() async {
         try? await api.logout(pushToken: pushToken)
         handleUnauthorized()
+        modeStore.set(.unset)
+    }
+
+    /// `DELETE /me`: the admin's account takes the whole family with it. Signs out locally afterwards.
+    func deleteAccount(confirmation: DeletionConfirmation) async throws -> AccountDeleted {
+        let result = try await api.deleteAccount(confirmation: confirmation)
+        handleUnauthorized()
+        modeStore.set(.unset)
+        return result
     }
 
     /// Clears the session without a server call, e.g. after a 401.
@@ -321,10 +473,23 @@ final class AppModel {
         sessionEndedMessage = reason
     }
 
+    /// A new or rotated FCM registration token. Registered now when signed in, otherwise at the next sign-in.
     func updatePushToken(_ token: String) {
+        guard token != pushToken else { return }
         pushToken = token
-        guard isSignedIn else { return }
+        guard isSignedIn, mode == .parent else { return }
         Task { try? await api.registerPushToken(token) }
+    }
+
+    /// Opens the alert a push pointed at: marks it read and lets the caller show the Alerts tab.
+    func consumePushAlert() async -> PushAlert? {
+        guard let alert = pendingPushAlert else { return nil }
+        pendingPushAlert = nil
+        guard mode == .parent, isSignedIn else { return nil }
+        if let unread = try? await api.markAlertRead(id: alert.alertId) {
+            unreadAlerts = unread
+        }
+        return alert
     }
 
     // MARK: Child (local cache for the device-side role)
