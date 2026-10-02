@@ -25,3 +25,6 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Firebase (per-environment secret; get it from the Firebase console)
+GoogleService-Info.plist
