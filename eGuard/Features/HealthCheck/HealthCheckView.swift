@@ -38,8 +38,8 @@ struct HealthCheckView: View {
         } actions: {
             if isOnboarding {
                 Button(fixTitle ?? "Continue") {
-                    if let fix = report?.toFix?.first {
-                        router.push(.protectionEditor(childId: fix.childId, key: fix.key))
+                    if let fix = report?.toFix?.first, let target = fix.childId ?? childId {
+                        router.push(.protectionEditor(childId: target, key: fix.key))
                     } else if let childId {
                         router.push(.complete(childId: childId, batchId: nil))
                     }
@@ -55,8 +55,8 @@ struct HealthCheckView: View {
             } else {
                 if let fixTitle {
                     Button(fixTitle) {
-                        if let fix = report?.toFix?.first {
-                            router.push(.protectionEditor(childId: fix.childId, key: fix.key))
+                        if let fix = report?.toFix?.first, let target = fix.childId ?? childId {
+                            router.push(.protectionEditor(childId: target, key: fix.key))
                         }
                     }
                     .buttonStyle(.eGuardPrimary)
@@ -217,8 +217,11 @@ struct HealthCheckView: View {
                 .foregroundStyle(EGuardColors.warning)
             ForEach(report.toFix ?? []) { fix in
                 EGuardNavRow(title: fix.name, subtitle: fix.detail, symbolName: ProtectionKey.symbol(fix.key), tint: LucideIcon.tint(forKey: fix.key)) {
-                    router.push(.protectionEditor(childId: fix.childId, key: fix.key))
+                    if let target = fix.childId ?? childId {
+                        router.push(.protectionEditor(childId: target, key: fix.key))
+                    }
                 }
+                .disabled(fix.childId == nil && childId == nil)
             }
         }
     }

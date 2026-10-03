@@ -663,10 +663,11 @@ nonisolated struct FixItem: Codable, Equatable, Identifiable, Sendable {
     var name: String
     var status: CheckStatus
     var detail: String?
-    var childId: String
+    /// The server sends `null` for family-wide items that aren't tied to one child.
+    var childId: String?
     var deviceId: String?
 
-    var id: String { key + childId }
+    var id: String { key + (childId ?? "") }
 }
 
 nonisolated struct ChildHealth: Codable, Equatable, Identifiable, Sendable {
