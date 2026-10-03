@@ -107,7 +107,7 @@ Create the app in App Store Connect with:
 
 ### 3.1 Set the team
 
-The project currently has an empty `DEVELOPMENT_TEAM`, which is why the code signing identity resolves to ad hoc (`-`). In Xcode, select each of the four shipping targets, open Signing & Capabilities, and pick the team for both Debug and Release. Keep "Automatically manage signing" on.
+The committed project sets `DEVELOPMENT_TEAM` to `4FQJ8S5TWT` on the `eGuard` target. Xcode clears this value in the local working copy when the signed-in Apple ID loses access to the team, and the result is a code signing identity of ad hoc (`-`) with no error until you archive. Before a release, open Signing & Capabilities for each of the four shipping targets and confirm the team is selected for both Debug and Release. Keep "Automatically manage signing" on, and do not commit a project file whose team has been emptied.
 
 ### 3.2 Versioning
 
@@ -272,7 +272,7 @@ Expect questions under guidelines 5.1.1 (data collection), 5.1.4 (kids), and 5.5
 In order of likely impact:
 
 1. **Family Controls distribution entitlement not yet requested.** Nothing can reach TestFlight or the App Store until it is approved. See 2.3.
-2. **Team not set in the project.** Signing currently resolves to ad hoc. See 3.1.
+2. **Team cleared in the local working copy.** The committed project has the team, but the local project file had it emptied and signing resolved to ad hoc. See 3.1.
 3. **Universal links and the `eguard://` scheme are not registered.** Email links will open in Safari instead of the app. See 2.4.
 4. **`GoogleService-Info.plist` must be supplied out of band.** The gitignored file is required for push to work in the release build. See 2.5.
 5. **Export compliance key not set.** Minor, but saves a step per upload. See 3.3.
