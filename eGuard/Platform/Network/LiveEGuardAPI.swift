@@ -263,16 +263,18 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.get("children/\(childId)/protections"), as: ProtectionsResponse.self).protections
     }
 
-    func updateProtection(childId: String, key: String, config: JSONValue) async throws -> Batch {
-        try await client.send(.json(.put, "children/\(childId)/protections/\(key)", body: config.removing("key")), as: Batch.self)
+    func updateProtection(childId: String, key: String, config: JSONValue, baseVersion: String?) async throws -> ProtectionUpdate {
+        var body = config.removing("key")
+        if let baseVersion { body = body.setting("baseVersion", to: .string(baseVersion)) }
+        return try await client.send(.json(.put, "children/\(childId)/protections/\(key)", body: body), as: ProtectionUpdate.self)
     }
 
     func batch(id: String) async throws -> Batch {
         try await client.send(.get("batches/\(id)"), as: Batch.self)
     }
 
-    func confirmBatch(id: String) async throws -> Batch {
-        try await client.send(.empty(.post, "batches/\(id)/confirm"), as: Batch.self)
+    func confirmBatch(id: String, key: String?) async throws -> Batch {
+        try await client.send(.empty(.post, "batches/\(id)/confirm", query: key.map { [URLQueryItem(name: "key", value: $0)] } ?? []), as: Batch.self)
     }
 
     func cancelBatch(id: String) async throws -> Int {
@@ -285,6 +287,19 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.get("children/\(childId)/screen-time", query: [URLQueryItem(name: "period", value: period.rawValue)]), as: ScreenTimeReport.self)
     }
 
+    func extraTime(childId: String) async throws -> ExtraTime {
+        try await client.send(.get("children/\(childId)/extra-time"), as: ExtraTime.self)
+    }
+
+    func grantExtraTime(childId: String, minutes: Int) async throws -> ExtraTimeGrant {
+        struct Body: Encodable { let minutes: Int }
+        return try await client.send(.json(.post, "children/\(childId)/extra-time", body: Body(minutes: minutes)), as: ExtraTimeGrant.self)
+    }
+
+    func endExtraTime(childId: String) async throws {
+        try await client.send(.empty(.delete, "children/\(childId)/extra-time"))
+    }
+
     func apps(childId: String, filter: AppsFilter?) async throws -> AppsResponse {
         try await client.send(.get("children/\(childId)/apps", query: query([("filter", filter?.rawValue)])), as: AppsResponse.self)
     }
@@ -294,7 +309,13 @@ final class LiveEGuardAPI: EGuardAPIService {
     }
 
     func addApp(childId: String, name: String, approval: AppApproval, dailyLimitMinutes: Int?) async throws -> ChildApp {
-        try await client.send(.json(.post, "children/\(childId)/apps", body: NewAppRequest(name: name, approval: approval, dailyLimitMinutes: dailyLimitMinutes)), as: ChildApp.self)
+        // The reply is the rule (no `allowed`, no usage), not a list row: decoding it as `ChildApp` failed every add
+        let rule = try await client.send(.json(.post, "children/\(childId)/apps", body: NewAppRequest(name: name, approval: approval, dailyLimitMinutes: dailyLimitMinutes)), as: AppRuleUpdate.self)
+        return ChildApp(
+            id: rule.id, name: rule.name, approval: rule.approval, approvalLabel: rule.approvalLabel,
+            allowed: rule.approval == .allowed || rule.approval == .alwaysAllowed,
+            dailyLimitMinutes: rule.dailyLimitMinutes, todayMinutes: nil, installedAt: nil
+        )
     }
 
     func location(childId: String) async throws -> LocationResponse {
@@ -349,8 +370,40 @@ final class LiveEGuardAPI: EGuardAPIService {
         return try await client.send(.json(.patch, "devices/\(id)", body: Body(name: name)), as: DeviceDetail.self)
     }
 
-    func unpairDevice(id: String, confirmation: DeletionConfirmation) async throws {
-        try await client.send(.json(.delete, "devices/\(id)", body: confirmation))
+    func setPrimaryDevice(id: String) async throws -> DeviceDetail {
+        struct Body: Encodable { let isPrimary = true }
+        return try await client.send(.json(.patch, "devices/\(id)", body: Body()), as: DeviceDetail.self)
+    }
+
+    func moveDevice(id: String, childId: String, confirmation: DeletionConfirmation) async throws -> DeviceDetail {
+        // `{ childId, password }` or `{ childId, confirm: "DELETE" }`
+        struct Body: Encodable {
+            let confirmation: DeletionConfirmation
+            let childId: String
+            private enum CodingKeys: String, CodingKey { case childId }
+            func encode(to encoder: Encoder) throws {
+                try confirmation.encode(to: encoder)
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                try container.encode(childId, forKey: .childId)
+            }
+        }
+        return try await client.send(.json(.post, "devices/\(id)/move", body: Body(confirmation: confirmation, childId: childId)), as: DeviceDetail.self)
+    }
+
+    func unpairDevice(id: String, confirmation: DeletionConfirmation, deleteHistory: Bool) async throws {
+        struct Body: Encodable {
+            let confirmation: DeletionConfirmation
+            let deleteHistory: Bool
+            private enum CodingKeys: String, CodingKey { case deleteHistory }
+            func encode(to encoder: Encoder) throws {
+                try confirmation.encode(to: encoder)
+                if deleteHistory {
+                    var container = encoder.container(keyedBy: CodingKeys.self)
+                    try container.encode(true, forKey: .deleteHistory)
+                }
+            }
+        }
+        try await client.send(.json(.delete, "devices/\(id)", body: Body(confirmation: confirmation, deleteHistory: deleteHistory)))
     }
 
     func browsers() async throws -> [ConnectedBrowser] {
@@ -390,6 +443,11 @@ final class LiveEGuardAPI: EGuardAPIService {
 
     func family() async throws -> Family {
         try await client.send(.get("family"), as: Family.self)
+    }
+
+    func renameFamily(name: String) async throws -> Family {
+        struct Body: Encodable { let name: String }
+        return try await client.send(.json(.patch, "family", body: Body(name: name)), as: Family.self)
     }
 
     func inviteMember(name: String, email: String) async throws -> InvitationSent {

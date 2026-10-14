@@ -26,7 +26,7 @@ final class DeviceActivityScheduleService: ActivityScheduleService {
                 try center.startMonitoring(EGuardShared.Activity.downtime, during: schedule)
             case .schoolNights:
                 // One weekly schedule per start night. A window ending before it starts runs into the next day.
-                for weekday in days.startWeekdays {
+                for weekday in days.startWeekdays(startingAt: window.start) {
                     var start = window.start.dateComponents
                     start.weekday = weekday
                     var end = window.end.dateComponents
@@ -103,10 +103,20 @@ final class DeviceActivityScheduleService: ActivityScheduleService {
         ManagedSettingsStore(named: EGuardShared.Store.dailyLimits).clearAllSettings()
     }
 
-    func scheduleScreenTimeLimit(minutes: Int, selection: ActivitySelectionSnapshot) throws {
+    func scheduleScreenTimeLimit(weekdayMinutes: Int, weekendMinutes: Int, selection: ActivitySelectionSnapshot) throws {
         guard let resolved = ActivitySelectionCodec.selection(from: selection), !selection.isEmpty else {
             throw ProtectionConfigurationError.selectionRequired
         }
+        let defaults = EGuardShared.sharedDefaults
+        // Every sync re-applies the policy. Re-registering restarts the interval, which would lift a limit already
+        // reached today, so only register when the limits, the counted apps or the registered schedules changed.
+        let signature = "\(weekdayMinutes)|\(weekendMinutes)|\(selection.encodedSelection?.base64EncodedString() ?? "")"
+        let names = Self.screenTimeNames(weekdayMinutes: weekdayMinutes, weekendMinutes: weekendMinutes)
+        let registered = center.activities
+        if defaults?.string(forKey: EGuardShared.DefaultsKey.screenTimeSignature) == signature, names.allSatisfy({ registered.contains($0) }) {
+            return
+        }
+
         func event(at threshold: Int) -> DeviceActivityEvent {
             DeviceActivityEvent(
                 applications: resolved.applicationTokens,
@@ -116,25 +126,63 @@ final class DeviceActivityScheduleService: ActivityScheduleService {
             )
         }
         // The limit event, plus a ladder of usage rungs below it so the extension can record a running total.
-        var events: [DeviceActivityEvent.Name: DeviceActivityEvent] = [EGuardShared.Event.screenTime: event(at: minutes)]
-        for tick in UsageTicks.steps(limit: minutes) {
-            events[EGuardShared.Event.usageTick(minutes: tick)] = event(at: tick)
+        func events(limit: Int) -> [DeviceActivityEvent.Name: DeviceActivityEvent] {
+            var events: [DeviceActivityEvent.Name: DeviceActivityEvent] = [EGuardShared.Event.screenTime: event(at: limit)]
+            for tick in UsageTicks.steps(limit: limit) {
+                events[EGuardShared.Event.usageTick(minutes: tick)] = event(at: tick)
+            }
+            return events
         }
-        let defaults = EGuardShared.sharedDefaults
         defaults?.set(selection.encodedSelection, forKey: EGuardShared.DefaultsKey.screenTimeSelection)
-        defaults?.set(minutes, forKey: EGuardShared.DefaultsKey.screenTimeMinutes)
+        defaults?.set(weekdayMinutes, forKey: EGuardShared.DefaultsKey.screenTimeMinutes)
+        // The parent changed the limit (or the apps that count): it applies now, even after today's old limit was
+        // reached. Only a real change gets here, so the child can't use this to reset their allowance.
+        defaults?.removeObject(forKey: EGuardShared.DefaultsKey.shieldedOn)
+        ManagedSettingsStore(named: EGuardShared.Store.dailyLimits).clearAllSettings()
+        center.stopMonitoring(Self.allScreenTimeNames.filter { !names.contains($0) })
         do {
-            try center.startMonitoring(EGuardShared.Activity.screenTime, during: Self.allDay, events: events)
+            if weekdayMinutes == weekendMinutes {
+                try center.startMonitoring(EGuardShared.Activity.screenTime, during: Self.allDay, events: events(limit: weekdayMinutes))
+            } else {
+                // Weekdays and weekends differ: a weekly schedule per day with that day's limit, so Saturday's
+                // limit starts on Saturday whether or not the app is opened (nothing runs in the background).
+                for weekday in 1...7 {
+                    let limit = Self.isWeekend(weekday) ? weekendMinutes : weekdayMinutes
+                    let schedule = DeviceActivitySchedule(
+                        intervalStart: DateComponents(hour: 0, minute: 0, weekday: weekday),
+                        intervalEnd: DateComponents(hour: 23, minute: 59, weekday: weekday),
+                        repeats: true
+                    )
+                    try center.startMonitoring(EGuardShared.Activity.screenTime(weekday: weekday), during: schedule, events: events(limit: limit))
+                }
+            }
+            defaults?.set(signature, forKey: EGuardShared.DefaultsKey.screenTimeSignature)
             EGuardLog.configuration.info("Screen time limit registered.")
         } catch {
+            defaults?.removeObject(forKey: EGuardShared.DefaultsKey.screenTimeSignature)
             throw ProtectionConfigurationError.platformError(Self.describe(error))
         }
     }
 
     func stopScreenTimeLimit() {
-        center.stopMonitoring([EGuardShared.Activity.screenTime])
-        EGuardShared.sharedDefaults?.removeObject(forKey: EGuardShared.DefaultsKey.screenTimeSelection)
-        EGuardShared.sharedDefaults?.removeObject(forKey: EGuardShared.DefaultsKey.screenTimeMinutes)
+        center.stopMonitoring(Self.allScreenTimeNames)
+        let defaults = EGuardShared.sharedDefaults
+        defaults?.removeObject(forKey: EGuardShared.DefaultsKey.screenTimeSelection)
+        defaults?.removeObject(forKey: EGuardShared.DefaultsKey.screenTimeMinutes)
+        defaults?.removeObject(forKey: EGuardShared.DefaultsKey.screenTimeSignature)
+        // A limit reached today stays shielded otherwise: no interval starts again to lift it
+        defaults?.removeObject(forKey: EGuardShared.DefaultsKey.shieldedOn)
+        ManagedSettingsStore(named: EGuardShared.Store.dailyLimits).clearAllSettings()
+    }
+
+    private static func isWeekend(_ weekday: Int) -> Bool { weekday == 1 || weekday == 7 }
+
+    private static var allScreenTimeNames: [DeviceActivityName] {
+        [EGuardShared.Activity.screenTime] + (1...7).map { EGuardShared.Activity.screenTime(weekday: $0) }
+    }
+
+    private static func screenTimeNames(weekdayMinutes: Int, weekendMinutes: Int) -> [DeviceActivityName] {
+        weekdayMinutes == weekendMinutes ? [EGuardShared.Activity.screenTime] : (1...7).map { EGuardShared.Activity.screenTime(weekday: $0) }
     }
 
     func stopAll() {
@@ -148,17 +196,26 @@ final class DeviceActivityScheduleService: ActivityScheduleService {
         var snapshot = ActivityScheduleSnapshot()
         let activities = center.activities
 
-        let everyDay = activities.contains(EGuardShared.Activity.downtime)
-        let schoolNights = BedtimeDays.schoolNights.startWeekdays.allSatisfy { activities.contains(EGuardShared.Activity.downtime(weekday: $0)) }
-        snapshot.isDowntimeScheduled = everyDay || schoolNights
-        if snapshot.isDowntimeScheduled {
-            let name = everyDay ? EGuardShared.Activity.downtime : EGuardShared.Activity.downtime(weekday: 1)
-            snapshot.downtimeDays = everyDay ? .everyDay : .schoolNights
-            if let schedule = center.schedule(for: name) {
-                snapshot.downtimeWindow = DowntimeWindow(
-                    start: TimeOfDay(hour: schedule.intervalStart.hour ?? 0, minute: schedule.intervalStart.minute ?? 0),
-                    end: TimeOfDay(hour: schedule.intervalEnd.hour ?? 0, minute: schedule.intervalEnd.minute ?? 0)
-                )
+        func window(_ name: DeviceActivityName) -> DowntimeWindow? {
+            guard let schedule = center.schedule(for: name) else { return nil }
+            return DowntimeWindow(
+                start: TimeOfDay(hour: schedule.intervalStart.hour ?? 0, minute: schedule.intervalStart.minute ?? 0),
+                end: TimeOfDay(hour: schedule.intervalEnd.hour ?? 0, minute: schedule.intervalEnd.minute ?? 0)
+            )
+        }
+        if activities.contains(EGuardShared.Activity.downtime) {
+            snapshot.isDowntimeScheduled = true
+            snapshot.downtimeDays = .everyDay
+            snapshot.downtimeWindow = window(EGuardShared.Activity.downtime)
+        } else {
+            // School nights: one schedule per start weekday. Which weekdays depends on the start (after midnight
+            // shifts them a day), so they're checked against the registered window's own start.
+            let weekdays = Set((1...7).filter { activities.contains(EGuardShared.Activity.downtime(weekday: $0)) })
+            if let first = weekdays.min(), let registered = window(EGuardShared.Activity.downtime(weekday: first)),
+               BedtimeDays.registered(startWeekdays: weekdays, startingAt: registered.start) == .schoolNights {
+                snapshot.isDowntimeScheduled = true
+                snapshot.downtimeDays = .schoolNights
+                snapshot.downtimeWindow = registered
             }
         }
 
@@ -168,8 +225,20 @@ final class DeviceActivityScheduleService: ActivityScheduleService {
             snapshot.gamingLimitMinutes = events[EGuardShared.Event.gaming].map { Self.minutes(from: $0.threshold) }
             snapshot.socialAppsLimitMinutes = events[EGuardShared.Event.socialApps].map { Self.minutes(from: $0.threshold) }
         }
-        if activities.contains(EGuardShared.Activity.screenTime) {
-            snapshot.screenTimeLimitMinutes = center.events(for: EGuardShared.Activity.screenTime)[EGuardShared.Event.screenTime].map { Self.minutes(from: $0.threshold) }
+        func limit(_ name: DeviceActivityName) -> Int? {
+            guard activities.contains(name) else { return nil }
+            return center.events(for: name)[EGuardShared.Event.screenTime].map { Self.minutes(from: $0.threshold) }
+        }
+        if let everyDay = limit(EGuardShared.Activity.screenTime) {
+            snapshot.screenTimeWeekdayMinutes = everyDay
+            snapshot.screenTimeWeekendMinutes = everyDay
+        } else {
+            // Per-day schedules: report them only when all seven are there (Monday stands for weekdays, Saturday for weekends)
+            let days = (1...7).map { limit(EGuardShared.Activity.screenTime(weekday: $0)) }
+            if days.allSatisfy({ $0 != nil }) {
+                snapshot.screenTimeWeekdayMinutes = days[1]
+                snapshot.screenTimeWeekendMinutes = days[6]
+            }
         }
         return snapshot
     }
@@ -228,14 +297,16 @@ final class MockActivityScheduleService: ActivityScheduleService {
         state.socialAppsLimitMinutes = nil
     }
 
-    func scheduleScreenTimeLimit(minutes: Int, selection: ActivitySelectionSnapshot) throws {
+    func scheduleScreenTimeLimit(weekdayMinutes: Int, weekendMinutes: Int, selection: ActivitySelectionSnapshot) throws {
         if let errorToThrow { throw errorToThrow }
         guard !selection.isEmpty else { throw ProtectionConfigurationError.selectionRequired }
-        state.screenTimeLimitMinutes = minutes
+        state.screenTimeWeekdayMinutes = weekdayMinutes
+        state.screenTimeWeekendMinutes = weekendMinutes
     }
 
     func stopScreenTimeLimit() {
-        state.screenTimeLimitMinutes = nil
+        state.screenTimeWeekdayMinutes = nil
+        state.screenTimeWeekendMinutes = nil
     }
 
     func stopAll() {

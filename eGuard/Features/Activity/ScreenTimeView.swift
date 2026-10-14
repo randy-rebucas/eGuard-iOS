@@ -9,11 +9,22 @@ struct ScreenTimeView: View {
     @Environment(AppRouter.self) private var router
     @State private var period: ScreenTimePeriod = .today
     @State private var state: LoadState<ScreenTimeReport> = .loading
+    /// nil until loaded, or when it couldn't be (the card is then hidden; the report still shows).
+    @State private var extraTime: ExtraTime?
+    @State private var extraTimeBusy = false
+    @State private var extraTimeMessage: String?
+    @State private var extraTimeError: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: EGuardSpacing.lg) {
-                PillSegmentedControl(options: ScreenTimePeriod.allCases, selection: $period) { $0.title }
+                // "More time requested" alerts open here ("Review request"), so the answer comes first
+                if let extraTime { extraTimeCard(extraTime) }
+
+                // A lock on tabs the plan doesn't include, as the web's Reports page does
+                PillSegmentedControl(options: ScreenTimePeriod.allCases, selection: $period) { p in
+                    locked?.periods.contains(p.rawValue) == true ? "🔒 \(p.title)" : p.title
+                }
 
                 switch state {
                 case .loading:
@@ -27,7 +38,18 @@ struct ScreenTimeView: View {
                     } else {
                         ErrorCard(message: message) { Task { await loadReport() } }
                     }
+                case .loaded(let report) where report.deviceCount == 0:
+                    // Nothing sends screen time yet: an empty ring would read as "used nothing"
+                    EGuardCard {
+                        EmptyStateView(symbolName: "iphone", title: "No phone or tablet yet", message: "Pair a phone or tablet to see screen time. Browsers don't send it.", tint: EGuardColors.neutral)
+                    }
                 case .loaded(let report):
+                    if let range = report.rangeLabel {
+                        Text(range)
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                            .frame(maxWidth: .infinity)
+                    }
                     ring(report)
                     if let hourly = report.hourly, hourly.contains(where: { $0 > 0 }) {
                         chart(title: "Activity by hour", data: hourly.enumerated().map { (label: hourLabel($0.offset), minutes: $0.element) })
@@ -43,15 +65,117 @@ struct ScreenTimeView: View {
         .navigationTitle("Screen Time")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: period) { await loadReport() }
+        .task { await loadExtraTime() }
+        .refreshable {
+            await loadExtraTime()
+            await loadReport()
+        }
+    }
+
+    private func loadExtraTime() async {
+        if let value = try? await model.api.extraTime(childId: childId) { extraTime = value }
+    }
+
+    private func extraTimeCard(_ extra: ExtraTime) -> some View {
+        let running = extra.isRunning()
+        return EGuardCard {
+            Text("Extra time").font(EGuardTypography.headline)
+            if let request = extra.request {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(request.body)
+                        Text(request.askedAt.relativeDescription())
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
+                } icon: {
+                    Image(systemName: "hourglass")
+                }
+                .font(EGuardTypography.callout)
+                .foregroundStyle(EGuardColors.warning)
+                .accessibilityIdentifier("screenTime.timeRequest")
+            }
+            if running, let until = extra.until {
+                Text("Extra time until \(until.formatted(date: .omitted, time: .shortened)).")
+                    .font(EGuardTypography.callout)
+            } else if extra.request == nil {
+                Text("Lets your child keep using apps past a limit or bedtime for a while. Blocked apps stay blocked.")
+                    .font(EGuardTypography.caption)
+                    .foregroundStyle(EGuardColors.textSecondary)
+            }
+            HStack(spacing: EGuardSpacing.xs) {
+                ForEach(extra.choices, id: \.self) { minutes in
+                    Button("+\(minutes) min") { Task { await grant(minutes) } }
+                        .buttonStyle(.eGuardSecondary)
+                        .accessibilityIdentifier("screenTime.give\(minutes)")
+                }
+            }
+            .disabled(extraTimeBusy)
+            if running || extra.request != nil {
+                Button(running ? "End now" : "Not now") { Task { await endExtraTime(wasRunning: running) } }
+                    .buttonStyle(.eGuardSecondary)
+                    .disabled(extraTimeBusy)
+                    .accessibilityIdentifier("screenTime.endExtraTime")
+            }
+            if let extraTimeMessage {
+                Text(extraTimeMessage)
+                    .font(EGuardTypography.caption)
+                    .foregroundStyle(EGuardColors.textSecondary)
+            }
+            InlineError(message: extraTimeError)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("screenTime.extraTime")
+    }
+
+    private func grant(_ minutes: Int) async {
+        extraTimeBusy = true
+        extraTimeError = nil
+        defer { extraTimeBusy = false }
+        do {
+            let result = try await model.api.grantExtraTime(childId: childId, minutes: minutes)
+            // Less than chosen when the 4-hour cap applies: say what was given
+            let added = result.addedMinutes ?? minutes
+            extraTimeMessage = added == 0
+                ? "Extra time already runs 4 hours ahead, the most eGuard gives at once."
+                : "\(added) more minutes\(added < minutes ? " (extra time runs at most 4 hours ahead)" : ""). The device picks it up within a few minutes."
+            await loadExtraTime()
+        } catch {
+            extraTimeError = error.localizedDescription
+        }
+    }
+
+    private func endExtraTime(wasRunning: Bool) async {
+        extraTimeBusy = true
+        extraTimeError = nil
+        defer { extraTimeBusy = false }
+        do {
+            try await model.api.endExtraTime(childId: childId)
+            extraTimeMessage = wasRunning ? "Extra time ended." : "Your child was told not now."
+            await loadExtraTime()
+        } catch {
+            extraTimeError = error.localizedDescription
+        }
     }
 
     @State private var isPlanLocked = false
+    /// From the last report: tabs the plan doesn't include. Choosing one shows the lock without a request.
+    @State private var locked: ScreenTimeLock?
 
     private func loadReport() async {
+        if let locked, locked.periods.contains(period.rawValue) {
+            isPlanLocked = true
+            // The server's lock names the plan to buy: neutral wording on iOS, as for any 403 plan_required
+            state = .failed(APIClient.storeSafeMessage(locked.message, status: 403, code: "plan_required"))
+            return
+        }
         state = .loading
         isPlanLocked = false
         do {
-            state = .loaded(try await model.api.screenTime(childId: childId, period: period))
+            let report = try await model.api.screenTime(childId: childId, period: period)
+            // Every report says what's locked (nil after an upgrade)
+            locked = report.locked
+            state = .loaded(report)
         } catch let error as APIError where error.code == "plan_required" {
             isPlanLocked = true
             state = .failed(error.localizedDescription)
@@ -70,7 +194,11 @@ struct ScreenTimeView: View {
                     Text(ProtectionConfigFormatter.duration(value))
                         .font(EGuardTypography.metric)
                         .monospacedDigit()
-                    Text(limit > 0 ? "of \(ProtectionConfigFormatter.duration(limit))" : (period == .today ? "today" : "per day"))
+                    // 7/30 days: the average of complete days, against the weekday limit
+                    Text(period == .today
+                         ? (limit > 0 ? "of \(ProtectionConfigFormatter.duration(limit))" : "today")
+                         : (limit > 0 ? "a day on average · limit \(ProtectionConfigFormatter.duration(limit))" : "a day on average"))
+                        .multilineTextAlignment(.center)
                         .font(EGuardTypography.caption)
                         .foregroundStyle(EGuardColors.textSecondary)
                 }
@@ -137,7 +265,7 @@ struct ScreenTimeView: View {
             let top = report.apps.first?.minutes ?? 1
             ForEach(report.apps) { app in
                 HStack(spacing: EGuardSpacing.sm) {
-                    IconTile(symbolName: "app.fill", tint: app.approval == .blocked ? EGuardColors.danger : EGuardColors.primary, size: 32)
+                    IconTile(symbolName: "app.fill", tint: app.approval == .blocked || app.approval == .filtered ? EGuardColors.danger : EGuardColors.primary, size: 32)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(app.name).font(EGuardTypography.label)
                         if let limit = app.dailyLimitMinutes {
@@ -165,13 +293,14 @@ struct ScreenTimeView: View {
     }
 
     private func dayLabel(_ iso: String) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        guard let date = formatter.date(from: iso) else { return iso }
-        return date.formatted(period == .week ? .dateTime.weekday(.abbreviated) : .dateTime.day())
+        guard let date = ScreenTimeReport.day(iso) else { return iso }
+        var style = period == .week ? Date.FormatStyle.dateTime.weekday(.abbreviated) : Date.FormatStyle.dateTime.day()
+        style.timeZone = TimeZone(identifier: "UTC")!
+        return date.formatted(style)
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         ScreenTimeView(childId: "child_1")
@@ -179,3 +308,4 @@ struct ScreenTimeView: View {
     .environment(AppModel.preview())
     .environment(AppRouter())
 }
+#endif

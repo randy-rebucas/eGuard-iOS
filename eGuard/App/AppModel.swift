@@ -141,8 +141,10 @@ final class AppModel {
 
     // MARK: Factories
 
-    /// Builds the model for the current process. UI tests and previews get mocks.
+    /// Builds the model for the current process. UI tests and previews get mocks (Debug builds only:
+    /// the mock server isn't compiled into Release, so `-uiTesting` does nothing there).
     static func make(arguments: [String] = ProcessInfo.processInfo.arguments) -> AppModel {
+        #if DEBUG
         if arguments.contains("-uiTesting") {
             let seeded = arguments.contains("-setupComplete")
             let model = mock(
@@ -156,6 +158,7 @@ final class AppModel {
             )
             return model
         }
+        #endif
         return live()
     }
 
@@ -169,6 +172,8 @@ final class AppModel {
             isFamilyControlsAvailable: !ProcessInfo.processInfo.isiOSAppOnMac,
             isSimulator: isSimulator
         )
+        // Before any store reads the Keychain: a reinstall must not open signed in to the previous account.
+        FreshInstallReset.run(secureStore: KeychainStore(), hasExistingData: FreshInstallReset.hasAppFiles())
         let sessionStore = SessionStore.live()
         let client = APIClient(sessionStore: sessionStore)
         let authorization = FamilyControlsAuthorizationService()
@@ -202,10 +207,14 @@ final class AppModel {
         )
         client.onUnauthorized = { [weak model] error in model?.handleUnauthorized(reason: error.localizedDescription) }
         deviceClient.onUnauthorized = { [weak childDevice] in childDevice?.handleRemoved() }
+        // Set here, not in a view: a background push can launch the app without connecting a scene.
+        // syncNow does nothing unless this is a paired child's device.
+        PushService.shared.syncHandler = { [weak childDevice] in await childDevice?.syncNow() }
         model.reconcileModeAtLaunch()
         return model
     }
 
+    #if DEBUG
     static func mock(
         api mockAPI: MockEGuardAPI? = nil,
         signedIn: Bool = false,
@@ -253,6 +262,7 @@ final class AppModel {
         }
         return model
     }
+    #endif
 
     // MARK: Mode
 
@@ -297,6 +307,7 @@ final class AppModel {
         modeStore.set(.unset)
     }
 
+    #if DEBUG
     /// A signed-in parent with a seeded family, for previews of the main app.
     static func preview() -> AppModel {
         let model = make(arguments: ["-uiTesting", "-setupComplete"])
@@ -304,6 +315,7 @@ final class AppModel {
         Task { await model.bootstrap() }
         return model
     }
+    #endif
 
     // MARK: Launch
 
@@ -471,10 +483,28 @@ final class AppModel {
         unreadAlerts = 0
         refreshError = nil
         sessionEndedMessage = reason
+        // Signed out offline, or ended elsewhere (a password change, removal): the server may still hold this
+        // phone's push token, so drop it here and the family's alerts stop reaching it. A new one is made for the
+        // next sign-in.
+        // PushService's own copy too: the token can exist before this model has heard of it.
+        if pushToken != nil || PushService.shared.fcmToken != nil {
+            pushToken = nil
+            PushService.shared.deleteToken(renew: true)
+        }
+        // Nothing of the account stays on the phone: children's photos (in memory, and any older builds' disk
+        // cache) and the last data export
+        photoCache = [:]
+        URLCache.shared.removeAllCachedResponses()
+        try? FileManager.default.removeItem(at: Self.exportURL)
     }
+
+    /// Where Settings › Account writes the family's data export for the share sheet.
+    static let exportURL = FileManager.default.temporaryDirectory.appending(path: "eguard-family-export.json")
 
     /// A new or rotated FCM registration token. Registered now when signed in, otherwise at the next sign-in.
     func updatePushToken(_ token: String) {
+        // A child's device sends its token on /sync (silent "sync now" wakes), never to the parent API
+        if mode == .child { childDevice.setPushToken(token) }
         guard token != pushToken else { return }
         pushToken = token
         guard isSignedIn, mode == .parent else { return }

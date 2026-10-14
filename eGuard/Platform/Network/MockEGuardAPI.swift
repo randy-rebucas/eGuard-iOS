@@ -1,5 +1,7 @@
 import Foundation
 
+// Debug only: Release builds can't select the mock server, even with `-uiTesting`.
+#if DEBUG
 /// An in-memory eGuard API with the spec's example data. Used by previews, UI tests, and unit tests.
 /// It keeps enough state that flows behave like the real server: sign-in, adding a child, batches that
 /// verify after a couple of polls, alerts that resolve, and app rules that change.
@@ -42,6 +44,9 @@ final class MockEGuardAPI: EGuardAPIService {
     private var browserPolicies: [String: BrowserPolicy] = [:]
     private var organizationsList: [Organization] = []
     private var browserRequestChild: [String: String] = [:]
+    private var extraTimeUntil: [String: Date] = [:]
+    /// A child's open "More time requested" (the server keeps it as an alert with resolveKey TIMEREQ).
+    var timeRequests: [String: ExtraTime.Request] = [:]
     private var sequence = 0
 
     /// The plan the mock family is on. Tests flip entitlements to exercise plan gating.
@@ -150,6 +155,7 @@ final class MockEGuardAPI: EGuardAPIService {
         browsersList = [
             ConnectedBrowser(id: nextID("browser"), childId: sophie.id, childName: "Sophie", deviceLabel: "Sophie's MacBook", browser: "Chrome", browserVersion: "130", extensionVersion: "1.2.0", platform: "macOS", lastSeenAt: Date.now.addingTimeInterval(-1800), connected: true, createdAt: Date.now.addingTimeInterval(-10 * 86400)),
         ]
+        refreshSummary(sophie.id)
         browserRequests = [
             BrowserAccessRequest(id: nextID("webreq"), domain: "discord.com", reason: "For my school group chat", status: "PENDING", duration: nil, expiresAt: nil, createdAt: Date.now.addingTimeInterval(-3600), decidedAt: nil, decidedBy: nil),
         ]
@@ -209,13 +215,15 @@ final class MockEGuardAPI: EGuardAPIService {
         protectionsByChild[childId] = (protectionsByChild[childId] ?? []).map { protection in
             var copy = protection
             let capability = Self.capability(key: protection.key, platform: platform)
-            // A device that can't apply a protection is "Not supported" there, whatever the siblings do.
+            // A device that can't apply a protection is "Not supported" there, whatever the siblings do. One the parent
+            // sets in Google Play (PARENT_SET) is "Not set up yet" until they confirm the steps.
             copy.devices.append(ProtectionDevice(
                 deviceId: device.id, deviceName: device.name, platform: platform,
                 capability: capability,
                 status: capability == .unsupported ? .unsupported : .notConfigured, reported: nil,
-                reportedLabel: capability == .unsupported ? "Not supported" : "Not configured",
-                message: capability == .unsupported ? "Not supported on \(device.name)" : "Not configured on \(device.name)", lastVerifiedAt: nil, guide: nil
+                reportedLabel: capability == .unsupported ? "Not supported" : (capability == .parentSet ? "Not set up yet" : "Not configured"),
+                message: capability == .unsupported ? "Not supported on \(device.name)" : (capability == .parentSet ? nil : "Not configured on \(device.name)"),
+                lastVerifiedAt: nil, guide: capability.isGuided ? Self.guide(for: protection.key, platform: platform) : nil
             ))
             // A protection no paired device can apply never counts against health.
             if copy.isUnsupportedEverywhere {
@@ -235,14 +243,27 @@ final class MockEGuardAPI: EGuardAPIService {
     }
 
     static func capability(key: String, platform: DevicePlatformKind) -> Capability {
-        guard platform == .ios else { return .available }
-        switch key {
-        case "WEB", "LOCATION": return .guided
-        case "DOWNLOADS": return .verifyOnly
-        case "NOTIFICATIONS": return .unsupported
-        default: return .available
+        // As the server's protections.ts
+        switch platform {
+        case .android:
+            switch key {
+            // A guided Private DNS step
+            case "WEB": return .guided
+            // Android can't read app or film ratings: the parent sets them in Google Play and confirms
+            case "APP_RESTRICTIONS", "CONTENT": return .parentSet
+            default: return .available
+            }
+        case .ios:
+            switch key {
+            case "LOCATION": return .guided
+            case "NOTIFICATIONS": return .unsupported
+            // WEB and DOWNLOADS are applied through Screen Time and read back
+            default: return .available
+            }
         }
     }
+
+    private static let parentSetMessage = "Set by you in Google Play. eGuard can't check it on Android."
 
     private func markAllVerified(childId: String) {
         for key in ProtectionKey.all {
@@ -252,9 +273,17 @@ final class MockEGuardAPI: EGuardAPIService {
 
     private func setStatus(childId: String, key: String, status: CheckStatus, message: String) {
         guard var list = protectionsByChild[childId], let index = list.firstIndex(where: { $0.key == key }) else { return }
-        list[index].status = list[index].isUnsupportedEverywhere ? .unsupported : status
         list[index].devices = list[index].devices.map { device in
             var copy = device
+            if device.capability == .parentSet {
+                // Never verified: "pass" here means the parent confirmed setting it, stored as UNSUPPORTED
+                copy.status = status == .pass ? .unsupported : .notConfigured
+                copy.reported = status == .pass ? list[index].policy : nil
+                copy.reportedLabel = status == .pass ? "Set by you: \(list[index].policyLabel)" : "Not set up yet"
+                copy.message = status == .pass ? Self.parentSetMessage : nil
+                copy.lastVerifiedAt = nil
+                return copy
+            }
             let unsupported = device.capability == .unsupported
             copy.status = unsupported ? .unsupported : status
             copy.reported = status == .pass ? list[index].policy : nil
@@ -263,6 +292,35 @@ final class MockEGuardAPI: EGuardAPIService {
             copy.lastVerifiedAt = status == .pass ? .now : nil
             return copy
         }
+        list[index].status = Self.protectionStatus(list[index].devices, fallback: status)
+        protectionsByChild[childId] = list
+        refreshSummary(childId)
+    }
+
+    /// The protection's status from its devices: the worst one that counts, or UNSUPPORTED when none counts (not
+    /// supported, or set by the parent).
+    private static func protectionStatus(_ devices: [ProtectionDevice], fallback: CheckStatus) -> CheckStatus {
+        guard !devices.isEmpty else { return fallback }
+        let counted = devices.map(\.status).filter { $0 != .unsupported }
+        guard let first = counted.first else { return .unsupported }
+        let order: [CheckStatus] = [.actionRequired, .notConfigured, .warning, .pass]
+        return order.first { counted.contains($0) } ?? first
+    }
+
+    /// The parent confirmed a PARENT_SET step on one device: recorded as set by them, not verified.
+    private func markParentSet(childId: String, key: String, deviceId: String) {
+        guard var list = protectionsByChild[childId], let index = list.firstIndex(where: { $0.key == key }) else { return }
+        list[index].devices = list[index].devices.map { device in
+            guard device.deviceId == deviceId, device.capability == .parentSet else { return device }
+            var copy = device
+            copy.status = .unsupported
+            copy.reported = list[index].policy
+            copy.reportedLabel = "Set by you: \(list[index].policyLabel)"
+            copy.message = Self.parentSetMessage
+            copy.lastVerifiedAt = nil
+            return copy
+        }
+        list[index].status = Self.protectionStatus(list[index].devices, fallback: list[index].status)
         protectionsByChild[childId] = list
         refreshSummary(childId)
     }
@@ -270,7 +328,7 @@ final class MockEGuardAPI: EGuardAPIService {
     private func app(_ name: String, _ approval: AppApproval, limit: Int?, today: Int) -> ChildApp {
         ChildApp(
             id: nextID("app"), name: name, approval: approval, approvalLabel: approval.title,
-            allowed: approval != .blocked && approval != .pending, dailyLimitMinutes: limit,
+            allowed: approval != .blocked && approval != .filtered && approval != .pending, dailyLimitMinutes: limit,
             todayMinutes: today, installedAt: Date.now.addingTimeInterval(-3 * 86400)
         )
     }
@@ -297,6 +355,7 @@ final class MockEGuardAPI: EGuardAPIService {
         let screenTime = protectionsByChild[childId]?.first { $0.key == "SCREEN_TIME" }?.policy
         var summary = summaries[index]
         summary.deviceCount = devices.count
+        summary.browserCount = browsersList.filter { $0.childId == childId && $0.connected }.count
         summary.primaryDevice = devices.first.map { PrimaryDevice(id: $0.id, name: $0.name, platform: $0.platform) }
         summary.health = health
         summary.status = devices.isEmpty ? .notconfigured : (health.score == health.total ? .protected : .attention)
@@ -328,10 +387,20 @@ final class MockEGuardAPI: EGuardAPIService {
     private func checks(childId: String) -> [HealthCheck] {
         (protectionsByChild[childId] ?? []).map { protection in
             let device = protection.devices.first { $0.status.needsAttention }
+            let setByYou = protection.devices.filter { $0.capability == .parentSet && $0.status == .unsupported }
+            let detail: String
+            if let device {
+                detail = device.capability == .parentSet ? "Not set up yet on \(device.deviceName): select to see the steps" : (device.message ?? device.statusTitle)
+            } else if protection.isParentSet {
+                detail = "Set by you on \(setByYou.map(\.deviceName).joined(separator: " and ")), not verified"
+            } else {
+                detail = protection.status == .pass ? "Verified on \(protection.devices.count) of \(protection.devices.count) devices" : "No device paired yet"
+            }
             return HealthCheck(
                 key: protection.key, name: protection.name, icon: protection.icon, status: protection.status,
-                detail: device?.message ?? (protection.status == .pass ? "Verified on \(protection.devices.count) of \(protection.devices.count) devices" : "No device paired yet"),
-                fixDeviceId: device?.deviceId, fixChildId: protection.status.needsAttention ? childId : nil
+                detail: detail,
+                fixDeviceId: device?.deviceId, fixChildId: protection.status.needsAttention ? childId : nil,
+                parentSet: protection.isParentSet
             )
         }
     }
@@ -727,7 +796,11 @@ final class MockEGuardAPI: EGuardAPIService {
     }
 
     private func freshRecoveryCodes() -> [String] {
-        (0..<10).map { _ in String((0..<8).map { _ in "abcdefghjkmnpqrstuvwxyz23456789".randomElement()! }) }
+        // The server's format (lib/totp newRecoveryCode): xxxx-xxxx-xxxx
+        (0..<10).map { _ in
+            let s = String((0..<12).map { _ in "abcdefghjkmnpqrstuvwxyz23456789".randomElement()! })
+            return "\(s.prefix(4))-\(s.dropFirst(4).prefix(4))-\(s.suffix(4))"
+        }
     }
 
     func confirmTwoFactor(code: String) async throws -> [String] {
@@ -774,19 +847,28 @@ final class MockEGuardAPI: EGuardAPIService {
 
     func notificationPrefs() async throws -> NotificationPrefs {
         try gate()
-        return try requireUser().notifications
+        var prefs = try requireUser().notifications
+        prefs.pushIncluded = entitlements.realtimeAlerts ?? true
+        return prefs
     }
 
     func updateNotificationPrefs(_ patch: NotificationPrefsPatch) async throws -> NotificationPrefs {
         try gate()
         var user = try requireUser()
+        // As the server: only turning push on is refused on a plan without it
+        let pushIncluded = entitlements.realtimeAlerts ?? true
+        if patch.notifyPush == true, !pushIncluded, !user.notifications.notifyPush {
+            throw APIError.server(status: 403, code: "plan_required", message: "Push alerts are included with eGuard Plus.")
+        }
         if let value = patch.notifyPush { user.notifications.notifyPush = value }
         if let value = patch.notifyEmail { user.notifications.notifyEmail = value }
         if let value = patch.notifyApproval { user.notifications.notifyApproval = value }
         if let value = patch.weeklySummary { user.notifications.weeklySummary = value }
         currentUser = user
         accounts[user.email]?.user = user
-        return user.notifications
+        var prefs = user.notifications
+        prefs.pushIncluded = pushIncluded
+        return prefs
     }
 
     func registerPushToken(_ token: String) async throws {
@@ -834,10 +916,15 @@ final class MockEGuardAPI: EGuardAPIService {
             summary = attention == 1 ? "1 child needs attention." : "\(attention) children need attention."
         }
         let health = familyHealth()
+        // As the server: most severe first, then newest, so newer info never hides a critical alert
+        let rank: [AlertSeverity: Int] = [.critical: 0, .actionRequired: 1, .attention: 2, .info: 3]
+        let recent = alertsList.filter { !$0.resolved }
+            .sorted { (rank[$0.severity] ?? 3, $1.createdAt) < (rank[$1.severity] ?? 3, $0.createdAt) }
         return Dashboard(
             user: user, greeting: "\(Date.now.greeting()),", summary: summary, health: health,
             children: summaries, deviceCount: devicesByChild.values.reduce(0) { $0 + $1.count },
-            recentAlerts: Array(alertsList.filter { !$0.resolved }.prefix(3)), unreadAlerts: unread()
+            browserCount: browsersList.filter(\.connected).count,
+            recentAlerts: Array(recent.prefix(3)), unreadAlerts: unread()
         )
     }
 
@@ -945,7 +1032,7 @@ final class MockEGuardAPI: EGuardAPIService {
         let letters = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
         let code = String((0..<8).map { _ in letters.randomElement()! })
         lastPairingCode = (code, childId)
-        return PairingCode(code: code, expiresAt: Date.now.addingTimeInterval(15 * 60), childName: child.name, kind: "DEVICE")
+        return PairingCode(code: code, expiresAt: Date.now.addingTimeInterval(15 * 60), childName: child.name, kind: "DEVICE", expiresInSeconds: 15 * 60)
     }
 
     /// The newest phone-app code, so a `MockDeviceAPI` sharing this server can redeem it.
@@ -963,7 +1050,7 @@ final class MockEGuardAPI: EGuardAPIService {
         }
         let letters = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
         let code = String((0..<8).map { _ in letters.randomElement()! })
-        return PairingCode(code: code, expiresAt: Date.now.addingTimeInterval(15 * 60), childName: child.name, kind: "BROWSER")
+        return PairingCode(code: code, expiresAt: Date.now.addingTimeInterval(15 * 60), childName: child.name, kind: "BROWSER", expiresInSeconds: 15 * 60)
     }
 
     /// Redeems a phone-app code the way `POST /api/device/v1/pair` would. Used by the mock device API.
@@ -1097,22 +1184,37 @@ final class MockEGuardAPI: EGuardAPIService {
     func protections(childId: String) async throws -> [Protection] {
         try gate()
         _ = try requireChild(childId)
-        return protectionsByChild[childId] ?? []
+        return (protectionsByChild[childId] ?? []).map { protection in
+            var copy = protection
+            copy.version = protectionVersion(childId: childId, key: protection.key)
+            return copy
+        }
     }
 
-    func updateProtection(childId: String, key: String, config: JSONValue) async throws -> Batch {
+    /// Changes each time the protection is saved, like the server's fingerprint of the setting and its open change.
+    private var protectionSaves: [String: Int] = [:]
+    private func protectionVersion(childId: String, key: String) -> String { "v\(protectionSaves["\(childId):\(key)", default: 0])" }
+
+    func updateProtection(childId: String, key: String, config: JSONValue, baseVersion: String?) async throws -> ProtectionUpdate {
         try gate()
         _ = try requireChild(childId)
         let upper = key.uppercased()
         guard let protection = protectionsByChild[childId]?.first(where: { $0.key == upper }) else {
             throw APIError.server(status: 404, code: "not_found", message: "Unknown protection.")
         }
-        guard !protection.isUnsupportedEverywhere, !protection.devices.isEmpty else {
-            throw APIError.server(status: 409, code: "unsupported", message: "None of \(summaries.first { $0.id == childId }?.name ?? "the child")'s devices support this protection.")
+        let childName = summaries.first { $0.id == childId }?.name ?? "the child"
+        if let baseVersion, baseVersion != protectionVersion(childId: childId, key: upper) {
+            throw APIError.server(status: 409, code: "stale", message: "\(protection.name) for \(childName) was changed by someone else since you opened this. Here's what it is now.")
+        }
+        guard !protection.isUnsupportedEverywhere else {
+            throw APIError.server(status: 409, code: "unsupported", message: "None of \(childName)'s devices support this protection.")
         }
         let full = config.setting("key", to: .string(upper))
         storePolicy(childId: childId, key: upper, config: full)
-        return makeBatch(childId: childId, configs: [(upper, full)])
+        protectionSaves["\(childId):\(upper)", default: 0] += 1
+        // As the server: with no device to verify it, it's saved as the child's setting and applied on pairing
+        if protection.devices.isEmpty { return .savedForPairing }
+        return .queued(makeBatch(childId: childId, configs: [(upper, full)]))
     }
 
     private func makeBatch(childId: String, configs: [(String, JSONValue)]) -> Batch {
@@ -1122,12 +1224,13 @@ final class MockEGuardAPI: EGuardAPIService {
             let deviceEntries = devices.compactMap { device -> BatchDevice? in
                 let capability = Self.capability(key: key, platform: device.platform)
                 guard capability != .unsupported else { return nil }
-                let guided = capability != .available
+                let guided = capability.isGuided
                 return BatchDevice(
                     requestId: nextID("req"), deviceId: device.id, deviceName: device.name, platform: device.platform,
                     mode: guided ? "GUIDED" : "APPLY", status: guided ? .awaitingParent : .pending, failureReason: nil,
                     offline: device.state == .offline, from: protectionsByChild[childId]?.first { $0.key == key }?.devices.first { $0.deviceId == device.id }?.reportedLabel,
-                    guide: guided ? Self.guide(for: key) : nil
+                    guide: guided ? Self.guide(for: key, platform: device.platform) : nil,
+                    parentSet: capability == .parentSet
                 )
             }
             return BatchItem(key: key, name: ProtectionKey.name(key), icon: ProtectionKey.icon(key), status: deviceEntries.contains { $0.status == .awaitingParent } ? .awaitingParent : .pending,
@@ -1147,24 +1250,40 @@ final class MockEGuardAPI: EGuardAPIService {
         protectionsByChild[childId] = list
     }
 
-    static func guide(for key: String) -> [String] {
-        switch key {
-        case "WEB": ["Open Settings, tap Screen Time, then Content & Privacy Restrictions.", "Tap App Store, Media, Web & Games, then Web Content.", "Choose Limit Adult Websites."]
-        case "LOCATION": ["Open Settings, tap Privacy & Security, then Location Services.", "Tap eGuard and choose Always.", "Turn on Precise Location."]
-        case "DOWNLOADS": ["Open Settings, tap Family, then your child's name.", "Tap Ask to Buy and turn on Require Purchase Approval."]
-        default: ["Open Settings on the child's device and follow the on-screen steps."]
+    /// The guided steps per platform, as the server's protections.ts.
+    static func guide(for key: String, platform: DevicePlatformKind) -> [String] {
+        let playParentalControls = [
+            "On your child's phone, open the Play Store, tap the profile picture, then Settings.",
+            "Tap Family, then Parental controls. Turn them on and choose a PIN your child doesn't know.",
+        ]
+        switch (platform, key) {
+        case (.android, "WEB"): return [
+            "Open Settings, tap Network & internet, then Private DNS. On Samsung: Connections, More connection settings, Private DNS.",
+            "Choose Private DNS provider hostname.",
+            "Type family.cloudflare-dns.com and tap Save.",
+        ]
+        case (.android, "APP_RESTRICTIONS"): return playParentalControls + ["Tap Apps & games and choose the highest rating that isn't above your setting, then Save."]
+        case (.android, "CONTENT"): return playParentalControls + ["Tap Movies (and TV, where it's listed) and choose the highest rating that isn't above your setting, then Save."]
+        case (.ios, "LOCATION"): return [
+            "Open Settings and tap your child's name at the top.",
+            "Tap Find My, then turn on Share My Location.",
+            "Open the eGuard app and tap Allow location if it asks.",
+        ]
+        default: return ["Open Settings on the child's device and follow the on-screen steps."]
         }
     }
 
     private static func summary(_ items: [BatchItem]) -> BatchSummary {
-        let requests = items.flatMap(\.devices)
+        // Per item, like the server: an item's status is its least-finished device's
+        func count(_ statuses: RequestStatus...) -> Int { items.filter { statuses.contains($0.status) }.count }
         return BatchSummary(
-            total: requests.count,
-            verified: requests.filter { $0.status == .verified }.count,
-            failed: requests.filter { $0.status == .failed }.count,
-            awaitingParent: requests.filter { $0.status == .awaitingParent }.count,
-            inProgress: requests.filter { $0.status == .pending || $0.status == .delivered }.count,
-            cancelled: requests.filter { $0.status == .cancelled }.count
+            total: items.count,
+            verified: count(.verified),
+            setByYou: items.filter { $0.status == .verified && $0.isParentSetOnly }.count,
+            failed: count(.failed),
+            awaitingParent: count(.awaitingParent),
+            inProgress: count(.pending, .delivered),
+            cancelled: count(.cancelled)
         )
     }
 
@@ -1208,19 +1327,30 @@ final class MockEGuardAPI: EGuardAPIService {
         return order.first { status in devices.contains { $0.status == status } } ?? .verified
     }
 
-    func confirmBatch(id: String) async throws -> Batch {
+    func confirmBatch(id: String, key: String?) async throws -> Batch {
         try gate()
         guard var batch = batches[id] else { throw APIError.server(status: 404, code: "not_found", message: "That change couldn't be found.") }
         var confirmed = 0
-        for itemIndex in batch.items.indices {
+        // As the server: `key` confirms only that protection's steps
+        for itemIndex in batch.items.indices where key == nil || batch.items[itemIndex].key == key {
             for deviceIndex in batch.items[itemIndex].devices.indices where batch.items[itemIndex].devices[deviceIndex].status == .awaitingParent {
-                batch.items[itemIndex].devices[deviceIndex].status = .delivered
-                fullReportRequested.insert(batch.items[itemIndex].devices[deviceIndex].deviceId)
+                let device = batch.items[itemIndex].devices[deviceIndex]
                 confirmed += 1
+                if device.isParentSet {
+                    // Nothing the device could check: recorded as the parent's word straight away
+                    batch.items[itemIndex].devices[deviceIndex].status = .verified
+                    markParentSet(childId: batch.childId, key: batch.items[itemIndex].key, deviceId: device.deviceId)
+                    continue
+                }
+                batch.items[itemIndex].devices[deviceIndex].status = .delivered
+                fullReportRequested.insert(device.deviceId)
             }
             batch.items[itemIndex].status = Self.leastFinished(batch.items[itemIndex].devices)
+            if batch.items[itemIndex].status.isFinished { markOpen(childId: batch.childId, key: batch.items[itemIndex].key, batchId: nil) }
         }
         batch.summary = Self.summary(batch.items)
+        batch.done = batch.items.allSatisfy { $0.status.isFinished }
+        batch.health = healthScore(childId: batch.childId)
         batch.confirmed = confirmed
         batches[id] = batch
         batchPolls[id] = max(batchPolls[id] ?? 0, pollsUntilVerified - 1)
@@ -1250,9 +1380,11 @@ final class MockEGuardAPI: EGuardAPIService {
     func screenTime(childId: String, period: ScreenTimePeriod) async throws -> ScreenTimeReport {
         try gate()
         let summary = summaries[try requireChild(childId)]
+        let lockMessage = "30-day reports are included with Family Pro."
         if period == .month, !entitlements.hasAdvancedReports {
-            throw APIError.server(status: 403, code: "plan_required", message: "30-day reports aren't included in your plan.")
+            throw APIError.server(status: 403, code: "plan_required", message: lockMessage)
         }
+        let locked = entitlements.hasAdvancedReports ? nil : ScreenTimeLock(periods: ["30d"], message: lockMessage)
         let hasDevice = summary.deviceCount > 0
         let limit = summary.todayLimitMinutes
         let apps = (appsByChild[childId] ?? []).filter { ($0.todayMinutes ?? 0) > 0 }.sorted { ($0.todayMinutes ?? 0) > ($1.todayMinutes ?? 0) }
@@ -1260,23 +1392,58 @@ final class MockEGuardAPI: EGuardAPIService {
         let today = calendar.startOfDay(for: .now)
         func day(_ offset: Int, minutes: Int) -> DayMinutes {
             let date = calendar.date(byAdding: .day, value: -offset, to: today) ?? today
-            return DayMinutes(date: date.formatted(.iso8601.year().month().day()), minutes: hasDevice ? minutes : 0, limitMinutes: calendar.isDateInWeekend(date) ? summary.weekendLimitMinutes : summary.dailyLimitMinutes)
+            // The day in the phone's zone (the mock's "family" zone); the default ISO style would use GMT
+            return DayMinutes(date: date.formatted(Date.ISO8601FormatStyle(timeZone: calendar.timeZone).year().month().day()), minutes: hasDevice ? minutes : 0, limitMinutes: calendar.isDateInWeekend(date) ? summary.weekendLimitMinutes : summary.dailyLimitMinutes)
         }
         switch period {
         case .today:
             let hourly = [0, 0, 0, 0, 0, 0, 0, 7, 7, 7, 7, 7, 3, 3, 3, 3, 12, 12, 12, 27, 12, 12, 0, 0]
+            // As the server: nothing complete to compare today with
             return ScreenTimeReport(period: "today", from: day(0, minutes: 0).date, to: day(0, minutes: 0).date, totalMinutes: hasDevice ? 134 : 0, averageMinutes: hasDevice ? 134 : 0,
-                                    previousAverageMinutes: hasDevice ? 152 : nil, limitMinutes: limit, days: [day(0, minutes: 134)], hourly: hasDevice ? hourly : nil,
-                                    apps: apps.map { AppUsage(name: $0.name, minutes: $0.todayMinutes ?? 0, appId: $0.id, approval: $0.approval, dailyLimitMinutes: $0.dailyLimitMinutes) })
+                                    previousAverageMinutes: nil, limitMinutes: limit, days: [day(0, minutes: 134)], hourly: hasDevice ? hourly : nil,
+                                    apps: apps.map { AppUsage(name: $0.name, minutes: $0.todayMinutes ?? 0, appId: $0.id, approval: $0.approval, dailyLimitMinutes: $0.dailyLimitMinutes) },
+                                    completeDays: 0, deviceCount: summary.deviceCount, locked: locked)
         case .week, .month:
             let count = period == .week ? 7 : 30
             let pattern = [134, 168, 95, 201, 143, 176, 122, 158, 110, 189]
             let days = (0..<count).reversed().map { day($0, minutes: pattern[$0 % pattern.count]) }
             let total = days.reduce(0) { $0 + $1.minutes }
-            return ScreenTimeReport(period: period.rawValue, from: days.first?.date ?? "", to: days.last?.date ?? "", totalMinutes: total, averageMinutes: total / count,
-                                    previousAverageMinutes: hasDevice ? 172 : nil, limitMinutes: summary.dailyLimitMinutes, days: days, hourly: nil,
-                                    apps: apps.map { AppUsage(name: $0.name, minutes: ($0.todayMinutes ?? 0) * count / 2, appId: $0.id, approval: $0.approval, dailyLimitMinutes: $0.dailyLimitMinutes) })
+            // Averages leave out today, still in progress
+            let complete = days.dropLast().reduce(0) { $0 + $1.minutes }
+            return ScreenTimeReport(period: period.rawValue, from: days.first?.date ?? "", to: days.last?.date ?? "", totalMinutes: total, averageMinutes: complete / (count - 1),
+                                    previousAverageMinutes: hasDevice ? 172 : 0, limitMinutes: summary.dailyLimitMinutes, days: days, hourly: nil,
+                                    apps: apps.map { AppUsage(name: $0.name, minutes: ($0.todayMinutes ?? 0) * count / 2, appId: $0.id, approval: $0.approval, dailyLimitMinutes: $0.dailyLimitMinutes) },
+                                    completeDays: count - 1, deviceCount: summary.deviceCount, locked: locked)
         }
+    }
+
+    func extraTime(childId: String) async throws -> ExtraTime {
+        try gate()
+        _ = try requireChild(childId)
+        let until = extraTimeUntil[childId].flatMap { $0 > .now ? $0 : nil }
+        return ExtraTime(until: until, request: timeRequests[childId], choices: [15, 30, 60])
+    }
+
+    func grantExtraTime(childId: String, minutes: Int) async throws -> ExtraTimeGrant {
+        try gate()
+        _ = try requireChild(childId)
+        guard [15, 30, 60].contains(minutes) else {
+            throw APIError.server(status: 400, code: "invalid", message: "minutes: Choose 15, 30, 60 minutes.")
+        }
+        // As the server: added to what's left, never more than 4 hours ahead
+        let now = Date.now
+        let from = extraTimeUntil[childId].flatMap { $0 > now ? $0 : nil } ?? now
+        let until = min(from.addingTimeInterval(Double(minutes) * 60), now.addingTimeInterval(4 * 3600))
+        extraTimeUntil[childId] = until
+        timeRequests[childId] = nil
+        return ExtraTimeGrant(until: until, addedMinutes: max(0, Int((until.timeIntervalSince(from) / 60).rounded())))
+    }
+
+    func endExtraTime(childId: String) async throws {
+        try gate()
+        _ = try requireChild(childId)
+        extraTimeUntil[childId] = nil
+        timeRequests[childId] = nil
     }
 
     func apps(childId: String, filter: AppsFilter?) async throws -> AppsResponse {
@@ -1310,7 +1477,7 @@ final class MockEGuardAPI: EGuardAPIService {
                 app.approval = approval
                 app.approvalLabel = approval.title
                 app.requested = false
-                app.allowed = approval != .blocked && approval != .pending
+                app.allowed = approval != .blocked && approval != .filtered && approval != .pending
                 alertsList = alertsList.map { alert in
                     var copy = alert
                     if alert.action?.type == "REVIEW_APPS", alert.childId == childId { copy.resolved = true }
@@ -1349,10 +1516,17 @@ final class MockEGuardAPI: EGuardAPIService {
         let current = sharing ? CurrentLocation(deviceId: devices[0].id, deviceName: devices[0].name, lat: 10.6785, lng: 124.8006, accuracyM: 25, placeLabel: "Baybay City, Leyte", locatedAt: located, updatedLabel: located.verifiedDescription(), fresh: devices[0].state != .offline, approximate: false) : nil
         let visits = sharing && privacySettings.keepLocationHistory ? Self.sampleVisits(deviceName: devices[0].name) : []
         let state: LocationState = devices.isEmpty ? .noDevices : (!sharing ? .sharingOff : (current == nil ? .waiting : .located))
-        return LocationResponse(childId: childId, sharing: sharing, state: state.rawValue, current: current,
-                                devices: devices.map { LocationDevice(id: $0.id, name: $0.name, sharing: sharing, hasLocation: sharing) },
-                                history: LocationHistory(enabled: privacySettings.keepLocationHistory, visits: visits))
+        var response = LocationResponse(childId: childId, sharing: sharing, state: state.rawValue, current: current,
+                                        devices: devices.map { LocationDevice(id: $0.id, name: $0.name, sharing: sharing, hasLocation: sharing) },
+                                        history: LocationHistory(enabled: privacySettings.keepLocationHistory, visits: visits))
+        // As the server: an iPhone shares only while eGuard is open on it, so a location that isn't fresh gets the note
+        if let device = devices.first, device.platform == .ios, current?.isFresh != true {
+            response.note = Self.iPhoneLocationNote
+        }
+        return response
     }
+
+    static let iPhoneLocationNote = "iPhone shares its location while eGuard is open on it, so this updates when your child opens eGuard."
 
     private static func sampleVisits(deviceName: String) -> [Visit] {
         let calendar = Calendar.current
@@ -1360,15 +1534,21 @@ final class MockEGuardAPI: EGuardAPIService {
             let day = calendar.date(byAdding: .day, value: -daysAgo, to: .now) ?? .now
             return calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day) ?? day
         }
-        let entries: [(String, Double, Double, Date)] = [
-            ("At Home", 10.6785, 124.8006, at(20, 14)),
-            ("Baybay Central School", 10.6801, 124.7960, at(14, 32)),
-            ("Robinsons Baybay", 10.6740, 124.8050, at(11, 8)),
-            ("At Home", 10.6785, 124.8006, at(19, 40, daysAgo: 1)),
+        // As the server sends them: only saved places have names (devices don't reverse-geocode), and a single fix
+        // taken on the way is "passing by" (stayed false)
+        let entries: [(String?, Double, Double, Date, Int)] = [
+            ("Home", 10.6785, 124.8006, at(20, 14), 30),
+            (nil, 10.6760, 124.8020, at(17, 5), 0),
+            ("Baybay Central School", 10.6801, 124.7960, at(14, 32), 150),
+            (nil, 10.6740, 124.8050, at(11, 8), 45),
+            ("Home", 10.6785, 124.8006, at(19, 40, daysAgo: 1), 30),
         ]
         return entries.enumerated().map { index, entry in
-            Visit(id: "visit_\(index)", deviceName: deviceName, lat: entry.1, lng: entry.2, placeLabel: entry.0, arrivedAt: entry.3, lastSeenAt: entry.3.addingTimeInterval(1800),
-                  timeLabel: entry.3.formatted(date: .omitted, time: .shortened), day: dayGroup(entry.3))
+            let end = entry.3.addingTimeInterval(TimeInterval(entry.4 * 60))
+            let from = entry.3.formatted(date: .omitted, time: .shortened)
+            return Visit(id: "visit_\(index)", deviceName: deviceName, lat: entry.1, lng: entry.2, placeLabel: entry.0, arrivedAt: entry.3, lastSeenAt: end,
+                         timeLabel: from, day: dayGroup(entry.3), stayed: entry.4 >= 4, durationMinutes: entry.4,
+                         spanLabel: entry.4 >= 4 ? "\(from) – \(end.formatted(date: .omitted, time: .shortened)) · \(entry.4) min" : from)
         }
     }
 
@@ -1384,7 +1564,8 @@ final class MockEGuardAPI: EGuardAPIService {
         for summary in summaries {
             let response = try await location(childId: summary.id)
             children.append(FamilyLocation(childId: summary.id, name: summary.name, hue: summary.hue, photoUrl: summary.photoUrl, sharing: response.sharing,
-                                           state: summary.deviceCount == 0 ? "no_devices" : (response.current != nil ? "located" : (response.sharing ? "waiting" : "sharing_off")), location: response.current))
+                                           state: summary.deviceCount == 0 ? "no_devices" : (response.current != nil ? "located" : (response.sharing ? "waiting" : "sharing_off")), location: response.current,
+                                           note: response.note))
         }
         return FamilyLocations(children: children)
     }
@@ -1444,7 +1625,9 @@ final class MockEGuardAPI: EGuardAPIService {
     func devices() async throws -> DevicesResponse {
         try gate()
         _ = try requireUser()
-        return DevicesResponse(devices: summaries.flatMap { devicesByChild[$0.id] ?? [] }, limit: 8)
+        let devices = summaries.flatMap { devicesByChild[$0.id] ?? [] }
+        // As the server counts slots: a browser disconnected for security doesn't take one
+        return DevicesResponse(devices: devices, limit: 8, used: devices.count + browsersList.filter(\.connected).count)
     }
 
     func device(id: String) async throws -> DeviceDetail {
@@ -1456,9 +1639,47 @@ final class MockEGuardAPI: EGuardAPIService {
                 return DeviceProtectionStatus(key: protection.key, name: protection.name, icon: protection.icon, capability: entry?.capability ?? .available, capabilityLabel: entry?.capability.title,
                                               status: entry?.status ?? .notConfigured, reportedLabel: entry?.reportedLabel, message: entry?.message, lastVerifiedAt: entry?.lastVerifiedAt)
             }
-            return DeviceDetail(id: device.id, childId: device.childId, childName: device.childName, name: device.name, model: device.model, kind: device.kind, platform: device.platform, osVersion: device.osVersion, appVersion: device.appVersion, battery: device.battery, isPrimary: device.isPrimary, lastSeenAt: device.lastSeenAt, lastSeenLabel: device.lastSeenLabel, state: device.state, issues: device.issues, protections: protections)
+            return DeviceDetail(id: device.id, childId: device.childId, childName: device.childName, name: device.name, model: device.model, kind: device.kind, platform: device.platform, osVersion: device.osVersion, appVersion: device.appVersion, battery: device.battery, isPrimary: device.isPrimary, lastSeenAt: device.lastSeenAt, lastSeenLabel: device.lastSeenLabel, state: device.state, issues: device.issues, firstCheck: device.firstCheck, protections: protections)
         }
         throw APIError.server(status: 404, code: "not_found", message: "That device couldn't be found.")
+    }
+
+    func setPrimaryDevice(id: String) async throws -> DeviceDetail {
+        try gate()
+        for (childId, devices) in devicesByChild where devices.contains(where: { $0.id == id }) {
+            devicesByChild[childId] = devices.map { var copy = $0; copy.isPrimary = $0.id == id; return copy }
+            refreshSummary(childId)
+            return try await device(id: id)
+        }
+        throw APIError.server(status: 404, code: "not_found", message: "That device couldn't be found.")
+    }
+
+    func moveDevice(id: String, childId: String, confirmation: DeletionConfirmation) async throws -> DeviceDetail {
+        try gate()
+        let user = try requireUser()
+        guard let target = summaries.first(where: { $0.id == childId }),
+              let from = devicesByChild.first(where: { $0.value.contains { $0.id == id } }),
+              var moving = from.value.first(where: { $0.id == id }) else {
+            throw APIError.server(status: 404, code: "not_found", message: "That device couldn't be found.")
+        }
+        let fromId = from.key, devices = from.value
+        guard fromId != childId else {
+            throw APIError.server(status: 400, code: "invalid_input", message: "\(moving.name) already belongs to \(target.name).")
+        }
+        try checkConfirmation(confirmation, for: user)
+        // As the server: the old child's oldest remaining device becomes primary; the new child's only if they have none
+        var remaining = devices.filter { $0.id != id }
+        if moving.isPrimary, !remaining.isEmpty { remaining[0].isPrimary = true }
+        devicesByChild[fromId] = remaining
+        moving.childId = childId
+        moving.childName = target.name
+        moving.isPrimary = (devicesByChild[childId] ?? []).isEmpty
+        moving.firstCheck = true
+        devicesByChild[childId, default: []].append(moving)
+        refreshSummary(fromId)
+        refreshSummary(childId)
+        alertsList.insert(makeAlert(childId: childId, deviceId: id, severity: .info, category: .devices, icon: "smartphone", title: "Device moved", body: "\(moving.name) now belongs to \(target.name).", subject: moving.name, age: 0, dismissible: true, action: nil), at: 0)
+        return try await device(id: id)
     }
 
     func renameDevice(id: String, name: String) async throws -> DeviceDetail {
@@ -1472,7 +1693,7 @@ final class MockEGuardAPI: EGuardAPIService {
         throw APIError.server(status: 404, code: "not_found", message: "That device couldn't be found.")
     }
 
-    func unpairDevice(id: String, confirmation: DeletionConfirmation) async throws {
+    func unpairDevice(id: String, confirmation: DeletionConfirmation, deleteHistory: Bool) async throws {
         try gate()
         let user = try requireUser()
         try checkConfirmation(confirmation, for: user)
@@ -1495,7 +1716,14 @@ final class MockEGuardAPI: EGuardAPIService {
     func browsers() async throws -> [ConnectedBrowser] {
         try gate()
         _ = try requireUser()
-        return browsersList
+        // The server's words for each (the mock's browsers report healthy)
+        return browsersList.map { browser in
+            var copy = browser
+            copy.status = browser.connected
+                ? .init(tone: "ok", label: "Protected", note: "Blocking sites with your browser settings.")
+                : .init(tone: "crit", label: "Disconnected for security", note: "Remove it, then add it again with a new code.")
+            return copy
+        }
     }
 
     func removeBrowser(id: String, confirmation: DeletionConfirmation) async throws {
@@ -1506,6 +1734,7 @@ final class MockEGuardAPI: EGuardAPIService {
             throw APIError.server(status: 404, code: "not_found", message: "That browser couldn't be found.")
         }
         browsersList.removeAll { $0.id == id }
+        refreshSummary(browser.childId)
         alertsList.insert(makeAlert(childId: browser.childId, deviceId: nil, severity: .info, category: .devices, icon: "globe", title: "Browser removed", body: "\(browser.deviceLabel) was disconnected from eGuard.", subject: browser.deviceLabel, age: 0, dismissible: true, action: nil), at: 0)
     }
 
@@ -1513,16 +1742,23 @@ final class MockEGuardAPI: EGuardAPIService {
         try gate()
         let child = summaries[try requireChild(childId)]
         if let policy = browserPolicies[childId] { return policy }
+        // Server shape: keys and labels as CATEGORY_META and YOUTUBE_RESTRICT_META (lib/browser-policy)
         let policy = BrowserPolicy(
-            version: 1, safeBrowsing: true, safeSearch: true,
-            blockedCategories: child.age < 13 ? ["ADULT", "GAMBLING", "VIOLENCE", "SOCIAL"] : ["ADULT", "GAMBLING"],
+            version: 1, safeBrowsing: true, safeSearch: true, youtubeRestrict: "MODERATE",
+            blockedCategories: child.age < 13 ? ["ADULT", "GAMBLING", "PROXY", "SOCIAL_MEDIA", "VIOLENCE"] : ["ADULT", "GAMBLING", "PROXY"],
             blockedDomains: [], allowedDomains: [], unknownSitesPolicy: child.age < 13 ? "WARN" : "ALLOW",
             schedule: nil, updatedBy: "eGuard defaults", updatedAt: .now,
             categories: [
                 BrowserCategory(key: "ADULT", label: "Adult content", hint: "Pornography and explicit material"),
-                BrowserCategory(key: "GAMBLING", label: "Gambling", hint: "Betting and casino sites"),
-                BrowserCategory(key: "VIOLENCE", label: "Violence", hint: "Graphic or violent content"),
-                BrowserCategory(key: "SOCIAL", label: "Social networks", hint: "Social media and chat"),
+                BrowserCategory(key: "GAMBLING", label: "Gambling", hint: "Betting, casinos, lotteries"),
+                BrowserCategory(key: "VIOLENCE", label: "Violence", hint: "Graphic violence and gore"),
+                BrowserCategory(key: "SOCIAL_MEDIA", label: "Social media", hint: "Facebook, Instagram, TikTok and similar"),
+                BrowserCategory(key: "PROXY", label: "Proxies & translators", hint: "Web proxies, page translators and archives that open blocked sites"),
+            ],
+            youtubeLevels: [
+                BrowserYoutubeLevel(key: "OFF", label: "Off", text: "YouTube works as usual."),
+                BrowserYoutubeLevel(key: "MODERATE", label: "Moderate", text: "Hides videos that may be mature, and all comments."),
+                BrowserYoutubeLevel(key: "STRICT", label: "Strict", text: "Hides more videos than Moderate, including some that are fine. Best for young children."),
             ]
         )
         browserPolicies[childId] = policy
@@ -1539,9 +1775,12 @@ final class MockEGuardAPI: EGuardAPIService {
         guard overlap.isEmpty else {
             throw APIError.server(status: 400, code: "invalid", message: "\(overlap.first!) can't be on both lists.")
         }
-        let changed = policy.update != BrowserPolicyUpdate(safeBrowsing: update.safeBrowsing, safeSearch: update.safeSearch, blockedCategories: update.blockedCategories, blockedDomains: update.blockedDomains, allowedDomains: update.allowedDomains, unknownSitesPolicy: update.unknownSitesPolicy, schedule: update.schedule, baseVersion: policy.version)
+        // Left out, the saved YouTube level stays (as the server does)
+        let youtube = update.youtubeRestrict ?? policy.youtubeRestrict
+        let changed = policy.update != BrowserPolicyUpdate(safeBrowsing: update.safeBrowsing, safeSearch: update.safeSearch, blockedCategories: update.blockedCategories, blockedDomains: update.blockedDomains, allowedDomains: update.allowedDomains, unknownSitesPolicy: update.unknownSitesPolicy, schedule: update.schedule, baseVersion: policy.version, youtubeRestrict: youtube)
         policy.safeBrowsing = update.safeBrowsing
         policy.safeSearch = update.safeSearch
+        policy.youtubeRestrict = youtube
         policy.blockedCategories = update.blockedCategories
         policy.blockedDomains = Array(Set(update.blockedDomains)).sorted()
         policy.allowedDomains = Array(Set(update.allowedDomains)).sorted()
@@ -1636,6 +1875,18 @@ final class MockEGuardAPI: EGuardAPIService {
         return Family(id: user.family.id, name: user.family.name, timezone: user.family.timezone, members: members, children: summaries,
                       deviceCount: deviceCount, devicesUsed: deviceCount + browsersList.count, deviceLimit: entitlements.deviceLimit ?? 10,
                       childCount: summaries.count, childLimit: entitlements.childLimit, plan: planName, entitlements: entitlements, canManage: user.isAdmin)
+    }
+
+    func renameFamily(name: String) async throws -> Family {
+        try gate()
+        var user = try requireUser()
+        guard user.isAdmin else { throw APIError.server(status: 403, code: "forbidden", message: "Only the family admin can rename the family.") }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 2 else { throw APIError.server(status: 400, code: "invalid", message: "Enter a family name.") }
+        user.family.name = trimmed
+        currentUser = user
+        accounts[user.email]?.user = user
+        return try await family()
     }
 
     func inviteMember(name: String, email: String) async throws -> InvitationSent {
@@ -1823,7 +2074,7 @@ final class MockEGuardAPI: EGuardAPIService {
             batches[batchId] = batch
         }
         return SyncResponse(
-            deviceId: deviceId, policy: policy, requests: requests,
+            deviceId: deviceId, childName: summaries.first { $0.id == childId }?.name, policy: policy, requests: requests,
             apps: (appsByChild[childId] ?? []).map { AppRule(name: $0.name, approval: $0.approval, dailyLimitMinutes: $0.dailyLimitMinutes) },
             fullReportRequested: fullReportRequested.contains(deviceId), nextSyncSeconds: 300, timezone: family.timezone,
             features: SyncFeatures(locationSharing: entitlements.hasLocationSharing), minAppVersion: nil
@@ -1848,10 +2099,12 @@ final class MockEGuardAPI: EGuardAPIService {
                 continue
             }
             let reported = entry.config.setting("key", to: .string(entry.key))
-            let matches = reported == list[index].policy
+            // As the server: exact, except WEB by mode
+            let matches = ProtectionKey.reportMatches(key: entry.key, reported: reported, policy: list[index].policy)
             let label = ProtectionConfigFormatter.label(key: entry.key, config: reported)
             list[index].devices = list[index].devices.map { device in
-                guard device.deviceId == deviceId, device.capability != .unsupported else { return device }
+                // A PARENT_SET protection is the parent's word: whatever the device says about it is ignored
+                guard device.deviceId == deviceId, device.capability != .unsupported, device.capability != .parentSet else { return device }
                 var copy = device
                 copy.reported = reported
                 copy.reportedLabel = label
@@ -1860,7 +2113,7 @@ final class MockEGuardAPI: EGuardAPIService {
                 copy.lastVerifiedAt = .now
                 return copy
             }
-            list[index].status = list[index].devices.filter { $0.capability != .unsupported }.map(\.status).min { rank($0) < rank($1) } ?? list[index].status
+            list[index].status = Self.protectionStatus(list[index].devices, fallback: list[index].status)
             for (batchId, var batch) in batches where batch.childId == childId {
                 for itemIndex in batch.items.indices where batch.items[itemIndex].key == entry.key {
                     for deviceIndex in batch.items[itemIndex].devices.indices where batch.items[itemIndex].devices[deviceIndex].deviceId == deviceId && !batch.items[itemIndex].devices[deviceIndex].status.isFinished {
@@ -1909,7 +2162,7 @@ final class MockEGuardAPI: EGuardAPIService {
         case .appRequested:
             guard let name = event.app else { return EventResponse(ok: true, approval: nil, duplicate: nil) }
             if let existing = appsByChild[childId]?.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
-                if existing.approval == .blocked, let index = appsByChild[childId]?.firstIndex(where: { $0.id == existing.id }) {
+                if existing.isBlocked, let index = appsByChild[childId]?.firstIndex(where: { $0.id == existing.id }) {
                     appsByChild[childId]?[index].requested = true
                 }
                 if existing.approval != .pending { return EventResponse(ok: true, approval: existing.approval, duplicate: nil) }
@@ -1932,3 +2185,4 @@ final class MockEGuardAPI: EGuardAPIService {
         return EventResponse(ok: true, approval: nil, duplicate: nil)
     }
 }
+#endif

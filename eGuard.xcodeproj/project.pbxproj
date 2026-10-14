@@ -89,6 +89,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		000000000000000000000011 /* Exceptions for "eGuard" folder in "eGuard" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 000000000000000100000000 /* eGuard */;
+		};
 		53FB0F993067C62800FCDAEB /* Exceptions for "eGuardActivityMonitor" folder in "eGuardActivityMonitor" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -115,6 +122,9 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		000000000000000000000010 /* eGuard */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				000000000000000000000011 /* Exceptions for "eGuard" folder in "eGuard" target */,
+			);
 			path = eGuard;
 			sourceTree = "<group>";
 		};
@@ -652,6 +662,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = eGuard/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = eGuard;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "When this is a child's device and a parent turned on location sharing, eGuard sends the device's location to the parent's eGuard app. Nothing is collected on a parent's phone.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -694,6 +705,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = eGuard/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = eGuard;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "When this is a child's device and a parent turned on location sharing, eGuard sends the device's location to the parent's eGuard app. Nothing is collected on a parent's phone.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;

@@ -43,7 +43,7 @@ struct ChildrenView: View {
                                     Text(child.name)
                                         .font(EGuardTypography.title3)
                                         .foregroundStyle(EGuardColors.textPrimary)
-                                    Text("\(child.ageDescription) · \(child.deviceCount == 0 ? "No devices" : (child.deviceCount == 1 ? child.deviceName : "\(child.deviceCount) devices"))")
+                                    Text("\(child.ageDescription) · \(child.deviceCount == 0 ? (child.isBrowserOnly ? "Browser only" : "No devices") : (child.deviceCount == 1 ? child.deviceName : "\(child.deviceCount) devices"))")
                                         .font(EGuardTypography.caption)
                                         .foregroundStyle(EGuardColors.textSecondary)
                                     HStack(spacing: EGuardSpacing.xs) {
@@ -81,6 +81,7 @@ struct ChildrenView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         ChildrenView()
@@ -88,3 +89,4 @@ struct ChildrenView: View {
     .environment(AppModel.preview())
     .environment(AppRouter())
 }
+#endif

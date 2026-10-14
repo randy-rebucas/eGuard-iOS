@@ -10,6 +10,12 @@ import Foundation
 protocol UsageSource: AnyObject {
     /// Today's (or yesterday's final) recorded total, or nil when nothing has been recorded yet.
     func pendingUsage() -> UsageRequest?
+    /// Every recorded day's total (up to 30), oldest first, so days the app wasn't opened on are sent too.
+    func pendingUsages() -> [UsageRequest]
+}
+
+extension UsageSource {
+    func pendingUsages() -> [UsageRequest] { pendingUsage().map { [$0] } ?? [] }
 }
 
 /// The rungs of the usage ladder: every 15 minutes up to the limit, coarser when the limit is long,
@@ -42,6 +48,14 @@ final class AppGroupUsageSource: UsageSource {
               let date = defaults.string(forKey: EGuardShared.DefaultsKey.usageDate), !date.isEmpty else { return nil }
         let minutes = defaults.integer(forKey: EGuardShared.DefaultsKey.usageMinutes)
         return UsageRequest(date: date, totalMinutes: min(max(minutes, 0), 1440), apps: nil, hourly: nil)
+    }
+
+    func pendingUsages() -> [UsageRequest] {
+        var byDate = (EGuardShared.sharedDefaults?.data(forKey: EGuardShared.DefaultsKey.usageByDate))
+            .flatMap { try? JSONDecoder().decode([String: Int].self, from: $0) } ?? [:]
+        // Recorded by an extension from before the per-day map: the latest day only
+        if let latest = pendingUsage() { byDate[latest.date] = max(byDate[latest.date] ?? 0, latest.totalMinutes) }
+        return byDate.keys.sorted().map { UsageRequest(date: $0, totalMinutes: min(max(byDate[$0] ?? 0, 0), 1440), apps: nil, hourly: nil) }
     }
 }
 

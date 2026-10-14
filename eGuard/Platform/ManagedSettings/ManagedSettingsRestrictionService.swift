@@ -18,12 +18,33 @@ final class ManagedSettingsRestrictionService: RestrictionService {
     }
 
     func applyAppInstallation(_ policy: AppInstallationPolicy) throws {
-        switch policy {
-        case .blocked:
-            store.application.denyAppInstallation = true
-        case .allowed, .parentApproval:
-            // Ask to Buy is a Family Sharing setting Apple does not expose to apps.
-            store.application.denyAppInstallation = nil
+        // Ask to Buy is a Family Sharing setting Apple does not expose to apps, so only blocking denies installs.
+        try applyInstallApproval(.appApproval, required: policy == .blocked)
+    }
+
+    func applyInstallApproval(_ reason: InstallApprovalReason, required: Bool) throws {
+        var reasons = installApprovalReasons
+        if required {
+            reasons.insert(reason)
+        } else {
+            reasons.remove(reason)
+        }
+        installApprovalReasons = reasons
+        store.application.denyAppInstallation = reasons.isEmpty ? nil : true
+    }
+
+    /// Kept in the App Group, beside the store it explains, so it survives relaunches.
+    private var installApprovalReasons: Set<InstallApprovalReason> {
+        get {
+            let raw = EGuardShared.sharedDefaults?.stringArray(forKey: EGuardShared.DefaultsKey.installApprovalReasons) ?? []
+            return Set(raw.compactMap(InstallApprovalReason.init(rawValue:)))
+        }
+        set {
+            if newValue.isEmpty {
+                EGuardShared.sharedDefaults?.removeObject(forKey: EGuardShared.DefaultsKey.installApprovalReasons)
+            } else {
+                EGuardShared.sharedDefaults?.set(newValue.map(\.rawValue).sorted(), forKey: EGuardShared.DefaultsKey.installApprovalReasons)
+            }
         }
     }
 
@@ -77,8 +98,13 @@ final class ManagedSettingsRestrictionService: RestrictionService {
         store.application.denyAppRemoval = deny ? true : nil
     }
 
+    func applyAutomaticDateAndTime(require: Bool) throws {
+        store.dateAndTime.requireAutomaticDateAndTime = require ? true : nil
+    }
+
     func clearAllRestrictions() {
         store.clearAllSettings()
+        installApprovalReasons = []
         ManagedSettingsStore(named: EGuardShared.Store.downtime).clearAllSettings()
         ManagedSettingsStore(named: EGuardShared.Store.dailyLimits).clearAllSettings()
     }
@@ -94,6 +120,11 @@ final class ManagedSettingsRestrictionService: RestrictionService {
         snapshot.denyAppRemoval = store.application.denyAppRemoval
         snapshot.maximumAppRatingAge = store.appStore.maximumRating.flatMap { RatingTiers.age(forRating: $0, in: RatingTiers.appStore) }
         snapshot.contentRatingAge = store.media.maximumMovieRating.flatMap { RatingTiers.age(forRating: $0, in: RatingTiers.movies) }
+        snapshot.maximumAppRating = store.appStore.maximumRating
+        snapshot.movieRating = store.media.maximumMovieRating
+        snapshot.tvRating = store.media.maximumTVShowRating
+        snapshot.installApprovalReasons = installApprovalReasons
+        snapshot.requiresAutomaticDateAndTime = store.dateAndTime.requireAutomaticDateAndTime
         snapshot.shieldedApplicationCount = store.shield.applications?.count ?? 0
         if let categories = store.shield.applicationCategories {
             snapshot.isApplicationCategoryShieldActive = categories != .none
@@ -121,8 +152,17 @@ final class MockRestrictionService: RestrictionService {
     }
 
     func applyAppInstallation(_ policy: AppInstallationPolicy) throws {
+        try applyInstallApproval(.appApproval, required: policy == .blocked)
+    }
+
+    func applyInstallApproval(_ reason: InstallApprovalReason, required: Bool) throws {
         try failIfNeeded()
-        state.denyAppInstallation = policy == .blocked ? true : nil
+        if required {
+            state.installApprovalReasons.insert(reason)
+        } else {
+            state.installApprovalReasons.remove(reason)
+        }
+        state.denyAppInstallation = state.installApprovalReasons.isEmpty ? nil : true
     }
 
     func applyExplicitContent(block: Bool) throws {
@@ -150,18 +190,26 @@ final class MockRestrictionService: RestrictionService {
     func applyMaximumAppRating(age: Int?) throws {
         try failIfNeeded()
         // Round-trip through Apple's rating values exactly like the live service.
-        state.maximumAppRatingAge = age.flatMap { RatingTiers.age(forRating: RatingTiers.rating(forAge: $0, in: RatingTiers.appStore), in: RatingTiers.appStore) }
+        state.maximumAppRating = age.map { RatingTiers.rating(forAge: $0, in: RatingTiers.appStore) }
+        state.maximumAppRatingAge = state.maximumAppRating.flatMap { RatingTiers.age(forRating: $0, in: RatingTiers.appStore) }
     }
 
     func applyContentRating(age: Int?) throws {
         try failIfNeeded()
-        state.contentRatingAge = age.flatMap { RatingTiers.age(forRating: RatingTiers.rating(forAge: $0, in: RatingTiers.movies), in: RatingTiers.movies) }
+        state.movieRating = age.map { RatingTiers.rating(forAge: $0, in: RatingTiers.movies) }
+        state.tvRating = age.map { RatingTiers.rating(forAge: $0, in: RatingTiers.tv) }
+        state.contentRatingAge = state.movieRating.flatMap { RatingTiers.age(forRating: $0, in: RatingTiers.movies) }
         state.denyExplicitContent = age.map { $0 < 18 ? true : nil } ?? nil
     }
 
     func applyAppRemoval(deny: Bool) throws {
         try failIfNeeded()
         state.denyAppRemoval = deny ? true : nil
+    }
+
+    func applyAutomaticDateAndTime(require: Bool) throws {
+        try failIfNeeded()
+        state.requiresAutomaticDateAndTime = require ? true : nil
     }
 
     func clearAllRestrictions() {

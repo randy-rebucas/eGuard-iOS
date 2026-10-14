@@ -54,7 +54,17 @@ final class APIClient {
     /// Called on any 401 with the server's error so the app can sign out locally and explain why.
     var onUnauthorized: ((APIError) -> Void)?
 
-    init(baseURL: URL = APIClient.defaultBaseURL, sessionStore: SessionStore, urlSession: URLSession = .shared) {
+    /// Shorter timeouts than `.shared` (60 s), so a slow server can't hold the splash for minutes, and no disk cache:
+    /// children's photos come with a year-long `Cache-Control` and must not stay on the phone after sign-out.
+    static let defaultSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 20
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
+
+    init(baseURL: URL = APIClient.defaultBaseURL, sessionStore: SessionStore, urlSession: URLSession = APIClient.defaultSession) {
         self.baseURL = baseURL
         self.sessionStore = sessionStore
         self.urlSession = urlSession
@@ -116,8 +126,10 @@ final class APIClient {
         if let contentType = request.contentType {
             urlRequest.setValue(contentType, forHTTPHeaderField: "Content-Type")
         }
+        var sentToken: String?
         if request.requiresAuth {
             guard let token = sessionStore.token else { throw APIError.notSignedIn }
+            sentToken = token
             urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
@@ -137,9 +149,11 @@ final class APIClient {
             let error = APIError.server(
                 status: http.statusCode,
                 code: body?.code ?? Self.defaultCode(for: http.statusCode),
-                message: Self.storeSafeMessage(body?.error ?? Self.defaultMessage(for: http.statusCode), status: http.statusCode)
+                message: Self.storeSafeMessage(body?.error ?? Self.defaultMessage(for: http.statusCode), status: http.statusCode, code: body?.code)
             )
-            if error.isUnauthorized, request.requiresAuth {
+            // Only for the session in use: a slow request from a session already replaced (signed in again
+            // meanwhile) must not sign out the new one
+            if error.isUnauthorized, request.requiresAuth, sentToken == sessionStore.token {
                 EGuardLog.app.error("401 on \(request.method.rawValue) \(request.path): \(body?.code ?? "-") \(body?.error ?? "-")")
                 onUnauthorized?(error)
             }
@@ -153,14 +167,21 @@ final class APIClient {
     /// Shown when a plan limit is hit. Neutral on purpose: no prices, no upgrade wording, no checkout link.
     static let planLimitMessage = "Your plan's limit has been reached. Contact support if you need to change your plan."
 
+    /// Shown when a feature isn't on the family's plan (`403 plan_required`), in place of "included with eGuard Plus".
+    static let planFeatureMessage = "This isn't included in your plan."
+
     /// Replaces plan-limit messages that invite an upgrade. The server should already omit that wording
-    /// for the iOS client; this is the safety net so a stray message can't get the app rejected.
-    static func storeSafeMessage(_ message: String, status: Int) -> String {
-        guard status == 409 || status == 402 else { return message }
+    /// for the iOS client; this is the safety net so a stray message can't get the app rejected. Covers
+    /// `403 plan_required` too ("Push alerts are included with eGuard Plus."), which names a plan to buy.
+    static func storeSafeMessage(_ message: String, status: Int, code: String? = nil) -> String {
+        let featureLocked = status == 403 && code == "plan_required"
+        guard status == 409 || status == 402 || featureLocked else { return message }
         let lowered = message.lowercased()
         let sellsSomething = lowered.contains("upgrade") || lowered.contains("subscribe") || lowered.contains("₱")
             || lowered.contains("per month") || lowered.contains("/month") || lowered.contains("eguard plus") || lowered.contains("eguard family")
-        return sellsSomething ? planLimitMessage : message
+            || lowered.contains("family pro") || lowered.contains("included with")
+        guard sellsSomething else { return message }
+        return featureLocked ? planFeatureMessage : planLimitMessage
     }
 
     private static func networkMessage(for error: Error) -> String {

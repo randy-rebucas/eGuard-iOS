@@ -12,7 +12,6 @@ final class CreateAccountViewModel {
     var errorMessage: String?
     var highlightedField: String?
     var isSubmitting = false
-    var isShowingGoogleNotice = false
 
     var validationMessage: String? {
         AccountValidator.validateName(fullName)
@@ -159,7 +158,8 @@ struct CreateAccountView: View {
             .disabled(viewModel.isSubmitting)
             .accessibilityIdentifier("account.create")
 
-            if signInOptions.apple || signInOptions.google {
+            // Google isn't offered: the app has no Google Sign-In SDK, so the button could only say "not available"
+            if signInOptions.apple {
                 orDivider
             }
 
@@ -185,26 +185,6 @@ struct CreateAccountView: View {
                     .clipShape(EGuardShapes.button)
                     .accessibilityIdentifier("account.apple")
                 }
-
-                if signInOptions.google {
-                    Button {
-                        viewModel.isShowingGoogleNotice = true
-                    } label: {
-                        Label {
-                            Text("Continue with Google")
-                        } icon: {
-                            Image(systemName: "g.circle.fill")
-                                .foregroundStyle(EGuardColors.danger)
-                        }
-                        .font(EGuardTypography.headline)
-                        .foregroundStyle(EGuardColors.textPrimary)
-                        .frame(maxWidth: .infinity, minHeight: 50)
-                        .background(EGuardColors.surface, in: EGuardShapes.button)
-                        .overlay(EGuardShapes.button.strokeBorder(EGuardColors.divider))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("account.google")
-                }
             }
 
             EGuardCard {
@@ -223,11 +203,6 @@ struct CreateAccountView: View {
             }
         }
         .brandNavigationTitle()
-        .alert("Google sign-in not configured", isPresented: $viewModel.isShowingGoogleNotice) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Google sign-in needs the Google Sign-In SDK and a client ID registered with the eGuard server. Use email or Apple for now.")
-        }
     }
 
     private var orDivider: some View {
@@ -279,6 +254,7 @@ struct CheckboxToggleStyle: ToggleStyle {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         CreateAccountView()
@@ -286,3 +262,4 @@ struct CheckboxToggleStyle: ToggleStyle {
     .environment(AppModel.mock())
     .environment(AppRouter())
 }
+#endif

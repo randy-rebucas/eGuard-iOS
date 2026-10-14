@@ -6,10 +6,14 @@ struct DevicesView: View {
     @Environment(AppRouter.self) private var router
     @State private var state: LoadState<DevicesResponse> = .loading
     @State private var browsers: [ConnectedBrowser] = []
+    /// `GET /browsers` failed: say so rather than show none.
+    @State private var browsersFailed = false
     @State private var isChecking = false
     @State private var checkResult: CheckRun?
     @State private var checkError: String?
+    /// Kept until the removal finishes; the alert has its own flag, which closing it clears first.
     @State private var browserToRemove: ConnectedBrowser?
+    @State private var isConfirmingBrowserRemoval = false
     @State private var browserError: String?
 
     var body: some View {
@@ -33,7 +37,8 @@ struct DevicesView: View {
                 ErrorCard(message: message) { Task { await loadDevices() } }
             case .loaded(let response):
                 if let limit = response.limit {
-                    Text("\(response.devices.count + browsers.count) of \(limit) device slots on your plan")
+                    // The server's count; a browser disconnected for security doesn't take a slot
+                    Text("\(response.used ?? response.devices.count + browsers.filter(\.connected).count) of \(limit) device slots on your plan")
                         .font(EGuardTypography.label)
                         .foregroundStyle(EGuardColors.textSecondary)
                 }
@@ -44,12 +49,15 @@ struct DevicesView: View {
                     checkCard(checkResult)
                 }
                 if response.devices.isEmpty {
-                    EmptyStateView(symbolName: "iphone.slash", title: "No devices paired", message: "Open a child's profile and tap Set Up Supervision to pair a device.")
+                    EmptyStateView(symbolName: "iphone.slash", title: "No devices paired", message: "Open a child's profile and tap Pair a device.")
                 }
                 ForEach(response.devices) { device in
                     deviceCard(device)
                 }
-                if !browsers.isEmpty {
+                if browsersFailed {
+                    SectionHeader(title: "Browsers")
+                    InlineError(message: "Couldn't load your browsers. Pull to refresh to try again.")
+                } else if !browsers.isEmpty {
                     browsersSection
                 }
             }
@@ -60,17 +68,24 @@ struct DevicesView: View {
             "Remove \(browserToRemove?.deviceLabel ?? "this browser")?",
             message: "The eGuard extension forgets the connection on its next check, and the family gets a \"Browser removed\" alert.",
             confirmTitle: "Remove",
-            isPresented: Binding(get: { browserToRemove != nil }, set: { if !$0 { browserToRemove = nil } }),
+            isPresented: $isConfirmingBrowserRemoval,
             user: model.user
         ) { confirmation in
-            Task { await removeBrowser(confirmation) }
+            // Read now: closing the alert clears `browserToRemove` before the Task runs
+            guard let browser = browserToRemove else { return }
+            Task { await removeBrowser(browser, confirmation) }
         }
     }
 
     private func loadDevices() async {
         if state.value == nil { state = .loading }
         state = await load { try await model.api.devices() }
-        browsers = (try? await model.api.browsers()) ?? []
+        do {
+            browsers = try await model.api.browsers()
+            browsersFailed = false
+        } catch {
+            browsersFailed = true
+        }
     }
 
     /// Asks every device for a fresh report and shows who answered.
@@ -126,14 +141,14 @@ struct DevicesView: View {
         } label: {
             EGuardCard {
                 HStack(spacing: EGuardSpacing.md) {
-                    IconTile(symbolName: device.symbolName, tint: tint(device.state), size: 56)
+                    IconTile(symbolName: device.symbolName, tint: deviceTint(device), size: 56)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(device.name).font(EGuardTypography.title3).foregroundStyle(EGuardColors.textPrimary)
                         Text("\(device.childName) · \(device.osVersion ?? device.platform.title)")
                             .font(EGuardTypography.caption)
                             .foregroundStyle(EGuardColors.textSecondary)
                         HStack(spacing: EGuardSpacing.xs) {
-                            StatusPill(text: device.issues > 0 ? "\(device.issues) issue\(device.issues == 1 ? "" : "s")" : device.state.title, tint: tint(device.state))
+                            StatusPill(text: device.statusTitle, tint: deviceTint(device))
                             if let battery = device.battery {
                                 Label("\(battery)%", systemImage: battery > 20 ? "battery.75percent" : "battery.25percent")
                                     .font(EGuardTypography.caption)
@@ -153,29 +168,35 @@ struct DevicesView: View {
         .accessibilityIdentifier("devices.device.\(device.id)")
     }
 
-    /// Browser extensions take plan slots but never enforce a policy, so they're never shown as protected.
+    /// Browser extensions, with the server's status: what the extension last reported, unless it's disconnected or silent.
     private var browsersSection: some View {
         VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
             SectionHeader(title: "Browsers")
             EGuardCard {
                 ForEach(browsers) { browser in
+                    let color = browserTint(browser)
                     HStack(spacing: EGuardSpacing.sm) {
-                        IconTile(symbolName: "globe", tint: browser.connected ? EGuardColors.tileTeal : EGuardColors.danger)
+                        IconTile(symbolName: "globe", tint: color)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(browser.deviceLabel).font(EGuardTypography.label)
                             Text([browser.childName, browser.detail.isEmpty ? nil : browser.detail, browser.lastSeenAt.map { "Seen \($0.relativeDescription())" }].compactMap { $0 }.joined(separator: " · "))
                                 .font(EGuardTypography.caption)
                                 .foregroundStyle(EGuardColors.textSecondary)
-                            if !browser.connected {
-                                Text("Disconnected for security. Remove it and add it again.")
+                            StatusPill(text: browser.statusLabel, tint: color)
+                            // Only when something needs doing: a healthy browser's note just repeats its label
+                            if let note = browser.status?.note, browser.status?.tone == "warn" || browser.status?.tone == "crit" {
+                                Text(note)
                                     .font(EGuardTypography.caption)
-                                    .foregroundStyle(EGuardColors.danger)
+                                    .foregroundStyle(color)
                             }
                         }
                         Spacer()
                         Menu {
                             Button("Website rules", systemImage: "list.bullet.rectangle") { router.push(.browserPolicy(childId: browser.childId)) }
-                            Button("Remove", systemImage: "trash", role: .destructive) { browserToRemove = browser }
+                            Button("Remove", systemImage: "trash", role: .destructive) {
+                                browserToRemove = browser
+                                isConfirmingBrowserRemoval = true
+                            }
                         } label: {
                             Image(systemName: "ellipsis.circle").foregroundStyle(EGuardColors.neutral)
                         }
@@ -189,8 +210,7 @@ struct DevicesView: View {
         }
     }
 
-    private func removeBrowser(_ confirmation: DeletionConfirmation) async {
-        guard let browser = browserToRemove else { return }
+    private func removeBrowser(_ browser: ConnectedBrowser, _ confirmation: DeletionConfirmation) async {
         do {
             try await model.api.removeBrowser(id: browser.id, confirmation: confirmation)
             browserError = nil
@@ -201,16 +221,29 @@ struct DevicesView: View {
         browserToRemove = nil
     }
 
-    private func tint(_ state: DeviceState) -> Color {
-        switch state {
-        case .healthy: EGuardColors.success
-        case .issues: EGuardColors.warning
-        case .offline: EGuardColors.neutral
+    private func browserTint(_ browser: ConnectedBrowser) -> Color {
+        guard let tone = browser.status?.tone else { return browser.connected ? EGuardColors.tileTeal : EGuardColors.danger }
+        return switch tone {
+        case "ok": EGuardColors.success
+        case "warn": EGuardColors.warning
+        case "crit": EGuardColors.danger
+        case "accent": EGuardColors.primary
+        default: EGuardColors.neutral
         }
     }
 }
 
-/// Device detail: `GET /devices/{id}` with rename, unpair, and a per-device check.
+/// A device's tint: waiting for its first check is neutral, not "issues".
+func deviceTint(_ device: APIDevice) -> Color {
+    if device.state != .offline, device.firstCheck == true { return EGuardColors.neutral }
+    return switch device.state {
+    case .healthy: EGuardColors.success
+    case .issues: EGuardColors.warning
+    case .offline: EGuardColors.neutral
+    }
+}
+
+/// Device detail: `GET /devices/{id}` with rename, make primary, move to another child and unpair, as on the web.
 struct DeviceDetailView: View {
     let deviceId: String
 
@@ -219,8 +252,22 @@ struct DeviceDetailView: View {
     @State private var state: LoadState<DeviceDetail> = .loading
     @State private var isRenaming = false
     @State private var newName = ""
+    /// Remove: first keep or delete what it recorded, then the password.
+    @State private var isChoosingRemoval = false
+    @State private var deleteHistory = false
     @State private var isConfirmingUnpair = false
+    /// Move: first the child, then the password.
+    @State private var isChoosingChild = false
+    @State private var moveTarget: ChildSummary?
+    @State private var isBusy = false
+    @State private var notice: String?
     @State private var error: String?
+
+    /// The family's other children, from the dashboard.
+    private var otherChildren: [ChildSummary] {
+        guard let childId = state.value?.childId else { return [] }
+        return model.children.filter { $0.id != childId }
+    }
 
     var body: some View {
         EGuardScreen {
@@ -238,12 +285,17 @@ struct DeviceDetailView: View {
                             Text([detail.model, detail.osVersion].compactMap { $0 }.joined(separator: " · "))
                                 .font(EGuardTypography.caption)
                                 .foregroundStyle(EGuardColors.textSecondary)
-                            StatusPill(text: detail.state.title, tint: detail.state == .healthy ? EGuardColors.success : EGuardColors.warning)
+                            StatusPill(text: detail.device.statusTitle, tint: deviceTint(detail.device))
                         }
                         Spacer()
                     }
                     Divider()
                     EGuardValueRow(label: "Child", value: detail.childName)
+                    if detail.isPrimary {
+                        Text("\(detail.childName)'s primary device: listed first and shown on their card.")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
                     EGuardValueRow(label: "eGuard version", value: detail.appVersion ?? "Unknown")
                     EGuardValueRow(label: "Last seen", value: detail.lastSeenLabel ?? "Never")
                     if let battery = detail.battery { EGuardValueRow(label: "Battery", value: "\(battery)%") }
@@ -261,8 +313,13 @@ struct DeviceDetailView: View {
                             router.push(.protectionEditor(childId: detail.childId, key: protection.key))
                         } label: {
                             HStack {
-                                ChecklistRow(title: protection.name, detail: protection.message ?? protection.reportedLabel, status: protection.status.healthStatus)
-                                ModeBadge(mode: protection.capability.mode)
+                                ChecklistRow(title: protection.name, detail: protection.message ?? protection.reportedLabel, status: protection.displayStatus)
+                                if protection.capability == .parentSet {
+                                    // Set in Google Play by the parent: "Set by you" or "Not set up yet", never "Not supported"
+                                    StatusPill(text: protection.statusTitle, tint: EGuardTheme.color(for: protection.displayStatus))
+                                } else {
+                                    ModeBadge(mode: protection.capability.mode)
+                                }
                             }
                             .contentShape(Rectangle())
                         }
@@ -271,31 +328,85 @@ struct DeviceDetailView: View {
                         if protection.id != detail.protections.last?.id { Divider() }
                     }
                 }
+                if let notice {
+                    Text(notice)
+                        .font(EGuardTypography.caption)
+                        .foregroundStyle(EGuardColors.success)
+                }
                 InlineError(message: error)
             }
         } actions: {
-            if state.value != nil {
+            if let detail = state.value {
                 Button("Rename Device") {
-                    newName = state.value?.name ?? ""
+                    newName = detail.name
                     isRenaming = true
                 }
                 .buttonStyle(.eGuardSecondary)
-                Button("Remove Device", role: .destructive) { isConfirmingUnpair = true }
+                .disabled(isBusy)
+                // A child's only device is already primary, so this shows only when they have another
+                if !detail.isPrimary {
+                    Button("Make Primary Device") { Task { await makePrimary() } }
+                        .buttonStyle(.eGuardSecondary)
+                        .disabled(isBusy)
+                }
+                if !otherChildren.isEmpty {
+                    Button("Move to Another Child") { isChoosingChild = true }
+                        .buttonStyle(.eGuardSecondary)
+                        .disabled(isBusy)
+                }
+                Button("Remove Device", role: .destructive) { isChoosingRemoval = true }
                     .buttonStyle(.eGuardText)
+                    .disabled(isBusy)
                     .accessibilityIdentifier("device.remove")
             }
         }
         .navigationTitle(state.value?.name ?? "Device")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadDevice() }
+        .refreshable { await loadDevice() }
         .alert("Rename device", isPresented: $isRenaming) {
             TextField("Name", text: $newName)
             Button("Save") { Task { await rename() } }
+                .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty || newName.count > 60)
             Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("1 to 60 characters.")
+        }
+        .confirmationDialog("Move \(state.value?.name ?? "this device") to…", isPresented: $isChoosingChild, titleVisibility: .visible) {
+            ForEach(otherChildren) { child in
+                Button(child.name) {
+                    moveTarget = child
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("It gets the new child's protections and apps on its next sync, and eGuard checks them again then. What it recorded stays in \(state.value?.childName ?? "the child")'s reports and history.")
         }
         .deletionConfirmation(
-            "Remove this device?",
-            message: "eGuard stops managing it and its token stops working. The device clears its protections at its next check-in, and the family gets a \"Device removed\" alert.",
+            "Move to \(moveTarget?.name ?? "another child")?",
+            message: "Other parents in your family are told.",
+            confirmTitle: "Move",
+            isPresented: Binding(get: { moveTarget != nil }, set: { if !$0 { moveTarget = nil } }),
+            user: model.user
+        ) { confirmation in
+            if let child = moveTarget { Task { await move(to: child, confirmation) } }
+        }
+        .confirmationDialog("Remove \(state.value?.name ?? "this device")?", isPresented: $isChoosingRemoval, titleVisibility: .visible) {
+            Button("Remove, Keep What It Recorded", role: .destructive) {
+                deleteHistory = false
+                isConfirmingUnpair = true
+            }
+            Button("Remove and Delete What It Recorded", role: .destructive) {
+                deleteHistory = true
+                isConfirmingUnpair = true
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The eGuard app on it stops applying your settings, and eGuard stops checking it. Its screen time, app usage and places can stay in your child's reports and history, or be deleted (that can't be undone).")
+        }
+        .deletionConfirmation(
+            deleteHistory ? "Remove and delete its history?" : "Remove this device?",
+            message: "The family gets a \"Device removed\" alert.",
             confirmTitle: "Remove",
             isPresented: $isConfirmingUnpair,
             user: model.user
@@ -310,17 +421,43 @@ struct DeviceDetailView: View {
     }
 
     private func rename() async {
+        await perform { try await model.api.renameDevice(id: deviceId, name: newName.trimmingCharacters(in: .whitespaces)) } done: { _ in "Device renamed." }
+    }
+
+    private func makePrimary() async {
+        await perform { try await model.api.setPrimaryDevice(id: deviceId) } done: { "Now \($0.childName)'s primary device." }
+    }
+
+    private func move(to child: ChildSummary, _ confirmation: DeletionConfirmation) async {
+        moveTarget = nil
+        await perform { try await model.api.moveDevice(id: deviceId, childId: child.id, confirmation: confirmation) } done: {
+            "Moved to \($0.childName). It gets their settings on its next sync."
+        }
+    }
+
+    /// Runs one change at a time, shows the updated device and refreshes the dashboard (children's device lists).
+    private func perform(_ call: () async throws -> DeviceDetail, done: (DeviceDetail) -> String) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
         do {
-            state = .loaded(try await model.api.renameDevice(id: deviceId, name: newName.trimmingCharacters(in: .whitespaces)))
+            let detail = try await call()
+            state = .loaded(detail)
+            error = nil
+            notice = done(detail)
             await model.refreshDashboard()
         } catch {
+            notice = nil
             self.error = error.localizedDescription
         }
     }
 
     private func unpair(_ confirmation: DeletionConfirmation) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
         do {
-            try await model.api.unpairDevice(id: deviceId, confirmation: confirmation)
+            try await model.api.unpairDevice(id: deviceId, confirmation: confirmation, deleteHistory: deleteHistory)
             await model.refreshDashboard()
             router.pop()
         } catch {
@@ -329,6 +466,7 @@ struct DeviceDetailView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         DevicesView()
@@ -336,3 +474,4 @@ struct DeviceDetailView: View {
     .environment(AppModel.preview())
     .environment(AppRouter())
 }
+#endif

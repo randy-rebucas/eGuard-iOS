@@ -81,9 +81,11 @@ struct AboutView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         AboutView()
     }
     .environment(AppModel.preview())
 }
+#endif

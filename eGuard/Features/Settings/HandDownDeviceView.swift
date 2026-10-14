@@ -107,6 +107,7 @@ struct HandDownDeviceView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         HandDownDeviceView()
@@ -114,3 +115,4 @@ struct HandDownDeviceView: View {
     .environment(AppModel.preview())
     .environment(AppRouter())
 }
+#endif

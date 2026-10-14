@@ -65,18 +65,18 @@ Submit one request per bundle identifier that uses the entitlement, so four in t
 
 Until approval arrives, archives will export for Development but fail validation for App Store distribution with an entitlement error on `com.apple.developer.family-controls`.
 
-### 2.4 Associated Domains and the URL scheme (currently missing)
+### 2.4 Associated Domains and the URL scheme
 
 The app parses verification, password reset, and invite links in two forms:
 
 - `https://www.eguard.family/verify-email?token=…`, `/reset-password`, `/accept-invite`
 - `eguard://verify-email?token=…` and the same three paths
 
-Neither form is registered in the project yet, so the system will never hand these URLs to the app. To make them work before release:
+Status (2026-10-13):
 
-1. Add the Associated Domains capability to the `eGuard` target in Xcode with the entry `applinks:www.eguard.family`.
-2. Host an `apple-app-site-association` file at `https://www.eguard.family/.well-known/apple-app-site-association` that lists `TEAMID.com.devcom.eguard` and the three paths.
-3. Add a URL Type to the `eGuard` target's Info tab with scheme `eguard` and identifier `com.devcom.eguard`.
+1. Done: `eGuard.entitlements` has `com.apple.developer.associated-domains` with `applinks:www.eguard.family`. Open Signing & Capabilities once so Xcode (automatic signing) turns on Associated Domains for the App ID and regenerates the profile.
+2. Done on the server: `https://www.eguard.family/.well-known/apple-app-site-association` lists `4FQJ8S5TWT.com.devcom.eguard` (override with `APPLE_APP_IDS`) and the three paths, each with a `token` query. It goes live with the next web deploy.
+3. Not done, optional: a URL Type with scheme `eguard`. Emails send `https://` links, so universal links cover them.
 
 Do these in Xcode, not by editing the project file by hand.
 
@@ -92,7 +92,7 @@ The entitlements file sets `aps-environment` to `development`. Leave it. Xcode r
 
 ### 2.6 Sign in with Apple
 
-Sign in with Apple is enabled and the app sends a hashed nonce with each request. The backend must verify the identity token and nonce. Also configure a Services ID and the "Sign in with Apple" email relay domain for `eguard.family` in the portal so Hide My Email relay addresses can receive the app's verification emails.
+Sign in with Apple is enabled and the app sends a hashed nonce with each request. The backend verifies the identity token and, since 2026-10-13, the nonce (`POST /auth/social` field `nonce`). Also configure a Services ID and the "Sign in with Apple" email relay domain for `eguard.family` in the portal so Hide My Email relay addresses can receive the app's verification emails.
 
 ### 2.7 App Store Connect record
 
@@ -273,7 +273,7 @@ In order of likely impact:
 
 1. **Family Controls distribution entitlement not yet requested.** Nothing can reach TestFlight or the App Store until it is approved. See 2.3.
 2. **Team cleared in the local working copy.** The committed project has the team, but the local project file had it emptied and signing resolved to ad hoc. See 3.1.
-3. **Universal links and the `eguard://` scheme are not registered.** Email links will open in Safari instead of the app. See 2.4.
+3. **Universal links need the App ID capability.** The entitlement and the server file are in place; confirm Associated Domains is on for the App ID. See 2.4.
 4. **`GoogleService-Info.plist` must be supplied out of band.** The gitignored file is required for push to work in the release build. See 2.5.
 5. **Export compliance key not set.** Minor, but saves a step per upload. See 3.3.
 6. **Push and the Screen Time usage ladder are verified by build and symbol inspection only.** They still need a run on a physical iPhone before release. See 4.3.

@@ -140,9 +140,9 @@ final class OnboardingUITests: XCTestCase {
         waitFor(element("pairing.paired", in: app))
         app.buttons["pairing.close"].tap()
 
-        // The batch runs; WEB is guided on iPhone and needs confirmation.
-        let web = app.buttons["configure.feature.web"]
-        tapScrolling(web, in: app)
+        // The batch runs; LOCATION is guided on iPhone and needs confirmation.
+        let location = app.buttons["configure.feature.location"]
+        tapScrolling(location, in: app)
         waitFor(app.buttons["guide.confirm"])
         app.buttons["guide.confirm"].tap()
         waitFor(element("setup.done", in: app), timeout: 20)

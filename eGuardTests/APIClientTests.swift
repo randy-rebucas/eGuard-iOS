@@ -94,6 +94,10 @@ struct APIClientTests {
             Issue.record("Unexpected error \(error)")
         }
         #expect(APIClient.storeSafeMessage("That email is already in use.", status: 409) == "That email is already in use.")
+        // 403 plan_required names a plan to buy ("included with eGuard Plus"): neutral on iOS
+        #expect(APIClient.storeSafeMessage("Push alerts are included with eGuard Plus.", status: 403, code: "plan_required") == APIClient.planFeatureMessage)
+        #expect(APIClient.storeSafeMessage("30-day reports are included with Family Pro.", status: 403, code: "plan_required") == APIClient.planFeatureMessage)
+        #expect(APIClient.storeSafeMessage("Only the family admin can do that.", status: 403, code: "forbidden") == "Only the family admin can do that.")
     }
 
     @Test func missingTokenFailsBeforeTheNetwork() async {
@@ -110,9 +114,167 @@ struct APIClientTests {
         #expect(box.a < box.b)
     }
 
+    @Test func decodesParentSetWhereTheServerSendsIt() throws {
+        let decoder = APIClient.makeDecoder()
+        // GET /health: `parentSet` is optional; true reads "Set by you", not "Not supported"
+        let checks = try decoder.decode([HealthCheck].self, from: Data(#"[{"key":"CONTENT","name":"Content","status":"UNSUPPORTED","detail":"Set by you","parentSet":true},{"key":"NOTIFICATIONS","name":"Notifications","status":"UNSUPPORTED"}]"#.utf8))
+        #expect(checks[0].isParentSet)
+        #expect(checks[0].displayStatus == .setByYou)
+        #expect(checks[0].displayStatus.title == "Set by you")
+        #expect(!checks[0].displayStatus.isEvaluated)
+        #expect(!checks[1].isParentSet)
+        #expect(checks[1].displayStatus.title == "Not supported")
+
+        // Batch items: a VERIFIED PARENT_SET step is the parent's word, never "Verified"
+        let device = try decoder.decode(BatchDevice.self, from: Data(#"{"requestId":"r1","deviceId":"d1","deviceName":"Galaxy","platform":"ANDROID","mode":"GUIDED","status":"VERIFIED","failureReason":null,"offline":false,"parentSet":true,"from":"Not set up yet","guide":["Open the Play Store"]}"#.utf8))
+        #expect(device.isGuided)
+        #expect(device.statusTitle == "Set by you, not verified")
+        let older = try decoder.decode(BatchDevice.self, from: Data(#"{"requestId":"r2","deviceId":"d2","deviceName":"iPad","platform":"IOS","mode":"APPLY","status":"VERIFIED","offline":false}"#.utf8))
+        #expect(!older.isParentSet)
+        #expect(older.statusTitle == "Verified")
+        let item = BatchItem(key: "CONTENT", name: "Content", icon: nil, status: .verified, to: "Rated 13+ and under", devices: [device])
+        #expect(item.isParentSetOnly)
+        #expect(item.statusTitle == "Set by you, not verified")
+
+        // The PARENT_SET capability: guided everywhere, "Set by you" once confirmed, "Not set up yet" before
+        let capabilities = try decoder.decode([Capability].self, from: Data(#"["PARENT_SET","GUIDED","SOMETHING_NEW"]"#.utf8))
+        #expect(capabilities == [.parentSet, .guided, .verifyOnly])
+        #expect(Capability.parentSet.isGuided)
+        #expect(Capability.parentSet.statusTitle(.unsupported) == "Set by you")
+        #expect(Capability.parentSet.statusTitle(.notConfigured) == "Not set up yet")
+        #expect(Capability.parentSet.healthStatus(.unsupported) == .setByYou)
+        #expect(Capability.unsupported.statusTitle(.unsupported) == "Not supported")
+        #expect(!Capability.available.isGuided)
+    }
+
     @Test func expiredSessionsAreDroppedOnLoad() {
         let store = InMemoryStore()
         try? store.save(APISession(token: "old", expiresAt: Date.now.addingTimeInterval(-60)), forKey: "apiSession")
         #expect(SessionStore(store: store).session == nil)
+    }
+
+    @Test func confirmingOneProtectionSendsItsKey() async throws {
+        let (client, _) = makeClient()
+        let api = LiveEGuardAPI(client: client)
+        let batchJSON = #"{"batchId":"b1","childId":"c1","done":false,"summary":{"total":2,"verified":1,"setByYou":1,"failed":0,"awaitingParent":1,"inProgress":0,"cancelled":0},"items":[],"health":{"score":1,"total":2},"confirmed":1}"#
+        StubURLProtocol.handler = { _ in (200, Data(batchJSON.utf8)) }
+
+        // One protection's guided steps: `?key=` so the batch's other guided steps aren't confirmed with it
+        let batch = try await api.confirmBatch(id: "b1", key: "LOCATION")
+        var request = try #require(StubURLProtocol.lastRequest)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path == "/api/mobile/v1/batches/b1/confirm")
+        let items = URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems
+        #expect(items == [URLQueryItem(name: "key", value: "LOCATION")])
+        #expect(batch.confirmed == 1)
+
+        // No key: the whole batch, and no query at all
+        _ = try await api.confirmBatch(id: "b1", key: nil)
+        request = try #require(StubURLProtocol.lastRequest)
+        #expect(request.url?.path == "/api/mobile/v1/batches/b1/confirm")
+        #expect(request.url?.query == nil)
+    }
+
+    @Test func batchSummarySaysDoneAndCountsSetByYou() throws {
+        let decoder = APIClient.makeDecoder()
+        let withSetByYou = try decoder.decode(BatchSummary.self, from: Data(#"{"total":10,"verified":3,"setByYou":2,"failed":0,"awaitingParent":1,"inProgress":6,"cancelled":0}"#.utf8))
+        #expect(withSetByYou.setByYouCount == 2)
+        #expect(withSetByYou.progressText == "3 of 10 done · 2 set by you")
+        let none = try decoder.decode(BatchSummary.self, from: Data(#"{"total":4,"verified":4,"setByYou":0,"failed":0,"awaitingParent":0,"inProgress":0,"cancelled":0}"#.utf8))
+        #expect(none.progressText == "4 of 4 done")
+        // Older servers leave it out
+        let older = try decoder.decode(BatchSummary.self, from: Data(#"{"total":2,"verified":1,"failed":0,"awaitingParent":0,"inProgress":1,"cancelled":0}"#.utf8))
+        #expect(older.setByYouCount == 0)
+        #expect(older.progressText == "1 of 2 done")
+    }
+
+    @Test func decodesTheLocationNote() throws {
+        let decoder = APIClient.makeDecoder()
+        let note = "iPhone shares its location while eGuard is open on it, so this updates when your child opens eGuard."
+        let response = try decoder.decode(LocationResponse.self, from: Data(#"{"childId":"c1","sharing":true,"state":"waiting","note":"\#(note)","current":null,"devices":[],"history":{"enabled":true,"visits":[]}}"#.utf8))
+        #expect(response.note == note)
+        let without = try decoder.decode(LocationResponse.self, from: Data(#"{"childId":"c1","sharing":true,"current":null,"devices":[],"history":{"enabled":true,"visits":[]}}"#.utf8))
+        #expect(without.note == nil)
+        let family = try decoder.decode(FamilyLocations.self, from: Data(#"{"children":[{"childId":"c1","name":"Mia","hue":200,"sharing":true,"state":"waiting","location":null,"note":"\#(note)"},{"childId":"c2","name":"Lucas","hue":20,"sharing":false,"state":"sharing_off"}]}"#.utf8))
+        #expect(family.children[0].note == note)
+        #expect(family.children[1].note == nil)
+    }
+
+    @Test func mapsTheUserAlertIcons() {
+        // Devices alerts "Switched to another user" / "Used on another user"
+        #expect(LucideIcon.symbol(for: "users") == "person.2.fill")
+        #expect(LucideIcon.symbol(for: "user-check") == "person.crop.circle.badge.checkmark")
+        #expect(LucideIcon.symbol(for: "user") == "person.fill")
+    }
+}
+
+/// The Keychain outlives an uninstall; the first launch of an install clears what it kept.
+@Suite("Fresh install reset")
+struct FreshInstallResetTests {
+    private func makeDefaults() -> UserDefaults {
+        let name = "FreshInstallResetTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        return defaults
+    }
+
+    /// A Keychain that can't be read, as before the first unlock after a restart.
+    private final class LockedStore: CodableStore {
+        var removed = false
+        func load<T: Decodable>(_ type: T.Type, forKey key: String) throws -> T? { throw KeychainError.unhandled(-25308) }
+        func save<T: Encodable>(_ value: T, forKey key: String) throws {}
+        func remove(forKey key: String) throws { removed = true }
+        func removeAll() throws { removed = true }
+    }
+
+    @Test func firstLaunchClearsTheStoredSessionOnce() throws {
+        let defaults = makeDefaults()
+        let store = InMemoryStore()
+        try store.save(APISession(token: "previous-install", expiresAt: Date.now.addingTimeInterval(3600)), forKey: "apiSession")
+        try store.save(AppMode.parent, forKey: "appMode")
+
+        #expect(FreshInstallReset.run(defaults: defaults, secureStore: store))
+        #expect(SessionStore(store: store).session == nil)
+        #expect(try store.load(AppMode.self, forKey: "appMode") == nil)
+        #expect(defaults.bool(forKey: FreshInstallReset.flagKey))
+
+        // Later launches keep a new sign-in
+        let session = APISession(token: "this-install", expiresAt: Date.now.addingTimeInterval(3600))
+        SessionStore(store: store).save(session)
+        #expect(!FreshInstallReset.run(defaults: defaults, secureStore: store))
+        #expect(SessionStore(store: store).session == session)
+    }
+
+    @Test func anUpdateFromAVersionWithoutTheFlagKeepsTheSession() throws {
+        let defaults = makeDefaults()
+        let store = InMemoryStore()
+        let session = APISession(token: "kept", expiresAt: Date.now.addingTimeInterval(3600))
+        try store.save(session, forKey: "apiSession")
+        #expect(!FreshInstallReset.run(defaults: defaults, secureStore: store, hasExistingData: true))
+        #expect(SessionStore(store: store).session == session)
+        #expect(defaults.bool(forKey: FreshInstallReset.flagKey))
+    }
+
+    @Test func aLockedKeychainIsLeftForALaterLaunch() {
+        let defaults = makeDefaults()
+        let store = LockedStore()
+        #expect(!FreshInstallReset.run(defaults: defaults, secureStore: store))
+        #expect(!store.removed)
+        #expect(!defaults.bool(forKey: FreshInstallReset.flagKey))
+    }
+}
+
+@Suite("Mock server location")
+struct MockLocationNoteTests {
+    @Test func theMockSendsTheLocationNoteForIPhonesOnly() async throws {
+        let api = MockEGuardAPI.seeded()
+        let children = try await api.children()
+        let mia = try #require(children.first { $0.name == "Mia" })
+        let lucas = try #require(children.first { $0.name == "Lucas" })
+        #expect(try await api.location(childId: mia.id).note == MockEGuardAPI.iPhoneLocationNote)
+        #expect(try await api.location(childId: lucas.id).note == nil)
+        let family = try await api.familyLocations()
+        #expect(family.children.first { $0.childId == mia.id }?.note == MockEGuardAPI.iPhoneLocationNote)
+        #expect(family.children.first { $0.childId == lucas.id }?.note == nil)
     }
 }

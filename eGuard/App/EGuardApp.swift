@@ -5,12 +5,16 @@ import UIKit
 import UserNotifications
 
 /// Starts Firebase and hands the APNs token to it. The FCM token Firebase returns is what the server
-/// registers with `POST /me/push-tokens`.
+/// registers with `POST /me/push-tokens` (a parent), or gets on `/sync` (a child's device, for silent syncs).
 final class PushRegistrationDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        #if DEBUG
         if !ProcessInfo.processInfo.arguments.contains("-uiTesting") {
             PushService.shared.configure()
         }
+        #else
+        PushService.shared.configure()
+        #endif
         return true
     }
 
@@ -20,6 +24,11 @@ final class PushRegistrationDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         EGuardLog.app.error("Push registration failed: \(error.localizedDescription)")
+    }
+
+    /// Background pushes (`content-available`): the server's "sync now" on a child's device.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
+        await PushService.shared.handleRemoteNotification(userInfo)
     }
 }
 
@@ -33,16 +42,28 @@ struct EGuardApp: App {
             RootView()
                 .environment(model)
                 .onOpenURL { url in model.open(url) }
-                .onChange(of: PushService.shared.fcmToken) { _, token in
+                // `initial`: Firebase can hand over its cached token (or a tapped alert, on a cold start) before
+                // this view attaches; without it that value is never seen
+                .onChange(of: PushService.shared.fcmToken, initial: true) { _, token in
                     if let token { model.updatePushToken(token) }
                 }
-                .onChange(of: PushService.shared.openedAlert) { _, alert in
+                .onChange(of: model.isSignedIn && model.mode == .parent, initial: true) { _, parent in
+                    PushService.shared.presentsAlerts = parent
+                }
+                .onChange(of: model.mode == .child, initial: true) { _, child in
+                    // A parent's change wakes the device to sync (AppModel.make sets the handler); without this
+                    // it waits until the app is opened. Silent pushes need no notification permission.
+                    guard child else { return }
+                    UIApplication.shared.registerForRemoteNotifications()
+                    if let token = PushService.shared.fcmToken { model.updatePushToken(token) }
+                }
+                .onChange(of: PushService.shared.openedAlert, initial: true) { _, alert in
                     guard let alert else { return }
                     PushService.shared.openedAlert = nil
                     model.pendingPushAlert = alert
                 }
                 .task {
-                    // Pushes are for parents. A child's device never registers.
+                    // Alerts are for parents; a child's device registers for silent syncs above
                     guard model.mode != .child else { return }
                     // Registration is silent when notifications were already allowed; the token arrives via the delegate.
                     let settings = await UNUserNotificationCenter.current().notificationSettings()

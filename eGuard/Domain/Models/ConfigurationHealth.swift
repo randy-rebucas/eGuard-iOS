@@ -7,6 +7,9 @@ nonisolated enum HealthStatus: String, Codable, CaseIterable, Sendable {
     case actionRequired = "ACTION_REQUIRED"
     case unsupported = "UNSUPPORTED"
     case notConfigured = "NOT_CONFIGURED"
+    /// The server's UNSUPPORTED for a protection the parent set on the device themselves (PARENT_SET, e.g. Google
+    /// Play's ratings on Android): recorded as set by the parent, never verified, not counted in health.
+    case setByYou = "SET_BY_YOU"
 
     var title: String {
         switch self {
@@ -15,18 +18,19 @@ nonisolated enum HealthStatus: String, Codable, CaseIterable, Sendable {
         case .actionRequired: "Action required"
         case .unsupported: "Not supported"
         case .notConfigured: "Not configured"
+        case .setByYou: "Set by you"
         }
     }
 
     /// Whether this state counts toward the health score denominator.
     var isEvaluated: Bool {
-        self != .unsupported
+        self != .unsupported && self != .setByYou
     }
 
     var needsAttention: Bool {
         switch self {
         case .warning, .actionRequired, .notConfigured: true
-        case .pass, .unsupported: false
+        case .pass, .unsupported, .setByYou: false
         }
     }
 }

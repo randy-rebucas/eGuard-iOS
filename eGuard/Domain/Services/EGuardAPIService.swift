@@ -2,6 +2,13 @@ import Foundation
 
 /// Every eGuard Parent Mobile API call the app makes. Implemented by the live client and a mock.
 @MainActor
+extension EGuardAPIService {
+    /// Without `baseVersion`: the newest change wins (tests and flows that don't show a loaded version).
+    func updateProtection(childId: String, key: String, config: JSONValue) async throws -> ProtectionUpdate {
+        try await updateProtection(childId: childId, key: key, config: config, baseVersion: nil)
+    }
+}
+
 protocol EGuardAPIService: AnyObject {
     // Public
     func appInfo() async throws -> AppInfo
@@ -68,13 +75,19 @@ protocol EGuardAPIService: AnyObject {
 
     // Protections and batches
     func protections(childId: String) async throws -> [Protection]
-    func updateProtection(childId: String, key: String, config: JSONValue) async throws -> Batch
+    /// `baseVersion`: the protection's `version` as shown; a change made or queued since is refused (`409 stale`).
+    func updateProtection(childId: String, key: String, config: JSONValue, baseVersion: String?) async throws -> ProtectionUpdate
     func batch(id: String) async throws -> Batch
-    func confirmBatch(id: String) async throws -> Batch
+    /// `key`: confirm only that protection's guided steps (nil: every guided step in the batch).
+    func confirmBatch(id: String, key: String?) async throws -> Batch
     func cancelBatch(id: String) async throws -> Int
 
     // Activity
     func screenTime(childId: String, period: ScreenTimePeriod) async throws -> ScreenTimeReport
+    func extraTime(childId: String) async throws -> ExtraTime
+    func grantExtraTime(childId: String, minutes: Int) async throws -> ExtraTimeGrant
+    /// Ends running extra time, or answers the child's request with "not now".
+    func endExtraTime(childId: String) async throws
     func apps(childId: String, filter: AppsFilter?) async throws -> AppsResponse
     func updateApp(id: String, patch: AppPatch) async throws -> AppRuleUpdate
     func addApp(childId: String, name: String, approval: AppApproval, dailyLimitMinutes: Int?) async throws -> ChildApp
@@ -93,7 +106,12 @@ protocol EGuardAPIService: AnyObject {
     func devices() async throws -> DevicesResponse
     func device(id: String) async throws -> DeviceDetail
     func renameDevice(id: String, name: String) async throws -> DeviceDetail
-    func unpairDevice(id: String, confirmation: DeletionConfirmation) async throws
+    /// Makes it its child's primary device: listed first and shown on the child's card.
+    func setPrimaryDevice(id: String) async throws -> DeviceDetail
+    /// Gives the device to another child without pairing again (`firstCheck` until it reports for them).
+    func moveDevice(id: String, childId: String, confirmation: DeletionConfirmation) async throws -> DeviceDetail
+    /// `deleteHistory` also deletes the screen time, app usage and places it recorded; otherwise they stay with the child.
+    func unpairDevice(id: String, confirmation: DeletionConfirmation, deleteHistory: Bool) async throws
     func browsers() async throws -> [ConnectedBrowser]
     func removeBrowser(id: String, confirmation: DeletionConfirmation) async throws
     func browserPolicy(childId: String) async throws -> BrowserPolicy
@@ -105,6 +123,8 @@ protocol EGuardAPIService: AnyObject {
 
     // Family, organizations and privacy
     func family() async throws -> Family
+    /// `PATCH /family { name }`: family admin only (403 `forbidden` otherwise).
+    func renameFamily(name: String) async throws -> Family
     func inviteMember(name: String, email: String) async throws -> InvitationSent
     func resendInvitation(memberId: String) async throws
     func removeMember(id: String) async throws

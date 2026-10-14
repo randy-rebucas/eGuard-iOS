@@ -137,7 +137,7 @@ struct ConfigurationIntegrationTests {
         let schedules = MockActivityScheduleService()
         try schedules.scheduleDowntime(DowntimeWindow(start: TimeOfDay(hour: 21, minute: 0), end: TimeOfDay(hour: 6, minute: 30)), days: .schoolNights)
         #expect(schedules.snapshot().downtimeDays == .schoolNights)
-        #expect(BedtimeDays.schoolNights.startWeekdays == [1, 2, 3, 4, 5])
+        #expect(BedtimeDays.schoolNights.startWeekdays(startingAt: TimeOfDay(hour: 21, minute: 0)) == [1, 2, 3, 4, 5])
         schedules.stopDowntime()
         #expect(schedules.snapshot().downtimeDays == nil)
     }

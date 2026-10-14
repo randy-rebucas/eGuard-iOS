@@ -32,7 +32,8 @@ nonisolated enum AppRoute: Hashable, Sendable {
     // Child and activity
     case childProfile(childId: String)
     case screenTime(childId: String)
-    case appsManagement(childId: String)
+    /// `pending`: open on the Pending filter, where app and website requests are answered.
+    case appsManagement(childId: String, pending: Bool = false)
     case location(childId: String)
     case deviceDetail(deviceId: String)
     case browserPolicy(childId: String)
@@ -118,23 +119,45 @@ final class AppRouter {
         popToRoot()
     }
 
-    /// Routes an alert's action button as the API describes.
-    func open(_ action: AlertAction) {
+    /// Routes an alert's action button as the API describes. False when the app can't open it (an unknown type, or
+    /// a missing id), so the caller can fall back instead of a tap that goes nowhere.
+    @discardableResult
+    /// Whether `open(_:)` goes somewhere for this action.
+    static func canOpen(_ action: AlertAction) -> Bool {
+        (action.type == "VIEW_BROWSERS" && action.childId == nil) || route(for: action) != nil
+    }
+
+    func open(_ action: AlertAction) -> Bool {
+        // A browser disconnected for security names no child: the Devices tab lists every browser
+        if action.type == "VIEW_BROWSERS" && action.childId == nil {
+            show(.devices)
+            return true
+        }
+        guard let route = Self.route(for: action) else { return false }
+        push(route)
+        return true
+    }
+
+    static func route(for action: AlertAction) -> AppRoute? {
+        let childId = action.childId
         switch action.type {
         case "FIX_SETTING":
-            if let childId = action.childId, let key = action.key { push(.protectionEditor(childId: childId, key: key)) }
+            guard let childId, let key = action.key else { return nil }
+            return .protectionEditor(childId: childId, key: key)
         case "VIEW_DEVICE":
-            if let deviceId = action.deviceId { push(.deviceDetail(deviceId: deviceId)) }
-        case "REVIEW_APPS":
-            if let childId = action.childId { push(.appsManagement(childId: childId)) }
-        case "VIEW_SCREEN_TIME":
-            if let childId = action.childId { push(.screenTime(childId: childId)) }
-        case "VIEW_HISTORY":
-            if let childId = action.childId { push(.childProfile(childId: childId)) }
-        case "MANAGE_SUBSCRIPTION":
-            push(.subscription)
-        default:
-            break
+            if let deviceId = action.deviceId { return .deviceDetail(deviceId: deviceId) }
+            return childId.map { .childProfile(childId: $0) }
+        case "REVIEW_APPS": return childId.map { .appsManagement(childId: $0, pending: true) }
+        case "VIEW_SCREEN_TIME": return childId.map { .screenTime(childId: $0) }
+        case "VIEW_HISTORY": return childId.map { .childProfile(childId: $0) }
+        case "VIEW_LOCATION": return childId.map { .location(childId: $0) }
+        // Website requests are answered with app requests, under Apps › Pending
+        case "REVIEW_SITE_REQUEST": return childId.map { .appsManagement(childId: $0, pending: true) }
+        case "VIEW_BROWSERS": return childId.map { .browserPolicy(childId: $0) }
+        case "VIEW_ORGANIZATIONS": return .organizations
+        case "VIEW_FAMILY": return .family
+        case "MANAGE_SUBSCRIPTION": return .subscription
+        default: return nil
         }
     }
 

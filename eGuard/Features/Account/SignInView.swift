@@ -151,6 +151,7 @@ struct SignInView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         SignInView()
@@ -158,3 +159,4 @@ struct SignInView: View {
     .environment(AppModel.mock())
     .environment(AppRouter())
 }
+#endif

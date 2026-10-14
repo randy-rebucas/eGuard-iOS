@@ -42,6 +42,7 @@ struct OrganizationsView: View {
                                 Button("Leave") { toLeave = organization }
                                     .font(EGuardTypography.label)
                                     .foregroundStyle(EGuardColors.danger)
+                                    .disabled(isWorking)
                             }
                         }
                         .padding(.vertical, EGuardSpacing.xxs)
@@ -63,9 +64,16 @@ struct OrganizationsView: View {
                 Label(message, systemImage: "checkmark.circle.fill").font(EGuardTypography.caption).foregroundStyle(EGuardColors.success)
             }
             InlineError(message: errorMessage)
+            // Running an organization is web-only. No link: the web page sells sponsor codes, and the app mustn't point
+            // to purchases (App Store guideline 3.1.1); no plans, prices or purchases named here either
+            Text("Creating an organization and managing it (join codes and admins) is done on the eGuard website.")
+                .font(EGuardTypography.caption)
+                .foregroundStyle(EGuardColors.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("organizations.web")
         } actions: {
             if state.value?.canManage == true {
-                Button("Join with a Code") { isJoining = true }
+                Button("Join with a Code") { message = nil; errorMessage = nil; isJoining = true }
                     .buttonStyle(.eGuardPrimary)
                     .accessibilityIdentifier("organizations.join")
             }
@@ -73,11 +81,15 @@ struct OrganizationsView: View {
         .navigationTitle("Organizations")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadOrganizations() }
-        .sheet(isPresented: $isJoining, onDismiss: { preview = nil; code = "" }) { joinSheet }
-        .confirmationDialog("Leave \(toLeave?.name ?? "this organization")?", isPresented: Binding(get: { toLeave != nil }, set: { if !$0 { toLeave = nil } }), titleVisibility: .visible) {
-            Button("Leave", role: .destructive) { Task { await leave() } }
+        .refreshable { await loadOrganizations() }
+        // An error from the sheet belongs to the sheet; don't leave it on this screen
+        .sheet(isPresented: $isJoining, onDismiss: { preview = nil; code = ""; errorMessage = nil }) { joinSheet }
+        // `presenting:` hands the action its organization: the binding clears `toLeave` as the dialog closes,
+        // before a Task started by the button would read it
+        .confirmationDialog("Leave \(toLeave?.name ?? "this organization")?", isPresented: Binding(get: { toLeave != nil }, set: { if !$0 { toLeave = nil } }), titleVisibility: .visible, presenting: toLeave) { organization in
+            Button("Leave", role: .destructive) { Task { await leave(organization) } }
             Button("Cancel", role: .cancel) {}
-        } message: {
+        } message: { _ in
             Text("A plan the organization already sponsored keeps running until it ends.")
         }
     }
@@ -110,7 +122,7 @@ struct OrganizationsView: View {
                     .buttonStyle(.eGuardPrimary)
                     .disabled(isWorking)
                     .accessibilityIdentifier("organizations.confirmJoin")
-                    Button("Back") { self.preview = nil }
+                    Button("Back") { self.preview = nil; errorMessage = nil }
                         .buttonStyle(.eGuardText)
                 } else {
                     Button(isWorking ? "Checking…" : "Continue") { Task { await previewCode() } }
@@ -156,8 +168,11 @@ struct OrganizationsView: View {
         }
     }
 
-    private func leave() async {
-        guard let organization = toLeave else { return }
+    private func leave(_ organization: Organization) async {
+        guard !isWorking else { return }
+        isWorking = true
+        defer { isWorking = false }
+        message = nil
         do {
             let left = try await model.api.leaveOrganization(id: organization.id)
             message = "Your family left \(left.name ?? organization.name)."
@@ -166,10 +181,10 @@ struct OrganizationsView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
-        toLeave = nil
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         OrganizationsView()
@@ -177,3 +192,4 @@ struct OrganizationsView: View {
     .environment(AppModel.preview())
     .environment(AppRouter())
 }
+#endif

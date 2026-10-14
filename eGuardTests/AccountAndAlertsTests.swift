@@ -204,12 +204,12 @@ struct AccountTests {
         let api = MockEGuardAPI.seeded()
         let device = try #require(try await api.devices().devices.first)
         await #expect(throws: APIError.self) {
-            try await api.unpairDevice(id: device.id, confirmation: .password("wrong"))
+            try await api.unpairDevice(id: device.id, confirmation: .password("wrong"), deleteHistory: false)
         }
         await #expect(throws: APIError.self) {
-            try await api.unpairDevice(id: device.id, confirmation: .typedDelete)
+            try await api.unpairDevice(id: device.id, confirmation: .typedDelete, deleteHistory: false)
         }
-        try await api.unpairDevice(id: device.id, confirmation: .password("ChangeMe123!"))
+        try await api.unpairDevice(id: device.id, confirmation: .password("ChangeMe123!"), deleteHistory: false)
         #expect(try await api.devices().devices.contains { $0.id == device.id } == false)
         #expect(try await api.alerts(filter: .devices, childId: nil, includeResolved: false, before: nil).alerts.first?.title == "Device removed")
     }
@@ -251,6 +251,54 @@ struct AccountTests {
         #expect(HealthScore(score: 0, total: 0).grade == "No devices yet")
         #expect(HealthScore(score: 0, total: 0).text == "–")
         #expect(HealthScore(score: 6, total: 10).grade == "Needs attention")
+        // Fractions of the total, as the server's healthLabel: 8 of 12 isn't "Good protection"
+        #expect(HealthScore(score: 8, total: 12).grade == "Needs attention")
+        #expect(HealthScore(score: 10, total: 12).grade == "Good protection")
+        #expect(HealthScore(score: 5, total: 12).grade == "Action required")
+    }
+
+    @Test func everyAlertActionTheServerSendsOpensAScreen() {
+        func action(_ type: String, childId: String? = "c1") -> AlertAction {
+            AlertAction(type: type, label: "Open", childId: childId, key: nil, deviceId: nil)
+        }
+        #expect(AppRouter.route(for: action("VIEW_LOCATION")) == .location(childId: "c1"))
+        // Website requests are answered under Apps › Pending, not on the browser policy screen
+        #expect(AppRouter.route(for: action("REVIEW_SITE_REQUEST")) == .appsManagement(childId: "c1", pending: true))
+        #expect(AppRouter.route(for: action("REVIEW_APPS")) == .appsManagement(childId: "c1", pending: true))
+        #expect(AppRouter.route(for: action("VIEW_BROWSERS")) == .browserPolicy(childId: "c1"))
+        #expect(AppRouter.route(for: action("VIEW_ORGANIZATIONS", childId: nil)) == .organizations)
+        #expect(AppRouter.route(for: action("VIEW_FAMILY", childId: nil)) == .family)
+        #expect(AppRouter.route(for: action("SOMETHING_NEW")) == nil)
+        // A disconnected browser names no child: the Devices tab, not a dead tap
+        let router = AppRouter()
+        #expect(router.open(action("VIEW_BROWSERS", childId: nil)))
+        #expect(router.selectedTab == .devices)
+        #expect(router.open(action("SOMETHING_NEW")) == false)
+    }
+
+    @Test func extraTimeAddsUpToFourHoursAndAnswersTheRequest() async throws {
+        let api = MockEGuardAPI.seeded()
+        _ = AppModel.mock(api: api, signedIn: true)
+        let childId = try #require(try await api.children().first?.id)
+        api.timeRequests[childId] = ExtraTime.Request(body: "Mia asked for more time on YouTube.", askedAt: .now)
+        let first = try await api.grantExtraTime(childId: childId, minutes: 60)
+        #expect(first.addedMinutes == 60)
+        #expect(try await api.extraTime(childId: childId).request == nil)
+        for _ in 0..<3 { _ = try await api.grantExtraTime(childId: childId, minutes: 60) }
+        // At the cap: nothing more is added, and the screen says so instead of "60 more minutes"
+        #expect(try await api.grantExtraTime(childId: childId, minutes: 60).addedMinutes == 0)
+        try await api.endExtraTime(childId: childId)
+        #expect(try await api.extraTime(childId: childId).isRunning() == false)
+    }
+
+    @Test func dashboardCountsBrowsersAndPutsCriticalAlertsFirst() async throws {
+        let api = MockEGuardAPI.seeded()
+        _ = AppModel.mock(api: api, signedIn: true)
+        let dashboard = try await api.dashboard()
+        #expect(dashboard.connectedDevices == dashboard.deviceCount + 1)
+        #expect(dashboard.children.first { $0.name == "Sophie" }?.browserCount == 1)
+        let ranks = dashboard.recentAlerts.map { [AlertSeverity.critical, .actionRequired, .attention, .info].firstIndex(of: $0.severity)! }
+        #expect(ranks == ranks.sorted())
     }
 
     @Test func pushAlertsOpenOnlyOnTheParentSide() async throws {
@@ -261,6 +309,11 @@ struct AccountTests {
 
         #expect(PushAlert(userInfo: ["type": "alert", "alertId": alert.id, "category": "PROTECTION"]) == PushAlert(alertId: alert.id, category: "PROTECTION"))
         #expect(PushAlert(userInfo: ["type": "news", "alertId": alert.id]) == nil)
+        // The alert's action rides along, so a tap opens what its button opens
+        let timePush = PushAlert(userInfo: ["type": "alert", "alertId": "a9", "category": "SCREEN_TIME", "childId": "c1", "actionType": "VIEW_SCREEN_TIME"])
+        #expect(timePush?.action.flatMap(AppRouter.route(for:)) == .screenTime(childId: "c1"))
+        let devicePush = PushAlert(userInfo: ["type": "alert", "alertId": "a8", "actionType": "VIEW_DEVICE", "deviceId": "d1"])
+        #expect(devicePush?.action.flatMap(AppRouter.route(for:)) == .deviceDetail(deviceId: "d1"))
 
         model.pendingPushAlert = PushAlert(alertId: alert.id, category: alert.category.rawValue, childId: alert.childId)
         let opened = await model.consumePushAlert()
@@ -287,6 +340,30 @@ struct AccountTests {
 
 @Suite("Plan entitlements and limits")
 struct PlanGatingTests {
+    @Test func sessionsDecodeWithoutAUserAgent() throws {
+        // A session whose client sent no User-Agent (userAgent null) mustn't fail the whole list
+        let json = #"{"sessions":[{"id":"s1","userAgent":null,"createdAt":"2026-10-13T01:00:00.000Z","lastSeenAt":null,"current":false},{"id":"s2","userAgent":"eGuard iOS","createdAt":"2026-10-13T01:00:00.000Z","lastSeenAt":"2026-10-13T02:00:00.000Z","current":true}]}"#
+        struct Sessions: Decodable { var sessions: [SessionInfo] }
+        let list = try APIClient.makeDecoder().decode(Sessions.self, from: Data(json.utf8)).sessions
+        #expect(list.map(\.userAgent) == [nil, "eGuard iOS"])
+    }
+
+    @Test func locationDecodesVisitsWithoutAPlaceName() throws {
+        // As the server sends it: most visits have no name (only saved places do), and a pass-by isn't a stay
+        let json = #"""
+        {"childId":"c1","sharing":true,"state":"waiting","waitingForReport":{"deviceId":"d1","deviceName":"iPad"},"current":null,"devices":[],
+         "history":{"enabled":true,"visits":[
+          {"id":"v1","deviceName":"iPad","lat":1,"lng":2,"placeLabel":null,"placeId":null,"arrivedAt":"2026-10-13T01:00:00.000Z","lastSeenAt":"2026-10-13T03:00:00.000Z",
+           "timeLabel":"Today, 9:00 AM","day":{"key":"2026-10-13","label":"Today"},"stayed":true,"durationMinutes":120,"spanLabel":"9:00 AM – 11:00 AM · 2 h"},
+          {"id":"v2","deviceName":"iPad","lat":1,"lng":2,"placeLabel":null,"placeId":null,"arrivedAt":"2026-10-13T04:00:00.000Z","lastSeenAt":"2026-10-13T04:00:00.000Z",
+           "timeLabel":"Today, 12:00 PM","day":{"key":"2026-10-13","label":"Today"},"stayed":false,"durationMinutes":0,"spanLabel":"12:00 PM"}],"more":false}}
+        """#
+        let response = try APIClient.makeDecoder().decode(LocationResponse.self, from: Data(json.utf8))
+        #expect(response.waitingForReport?.deviceName == "iPad")
+        #expect(response.history.visits.map(\.title) == ["Unnamed place", "Passing by"])
+        #expect(response.history.visits[0].detail == "9:00 AM – 11:00 AM · 2 h · iPad")
+    }
+
     @Test func thirtyDayReportsAndLocationFollowThePlan() async throws {
         let api = MockEGuardAPI.seeded()
         let mia = try #require(try await api.children().first)
@@ -297,8 +374,17 @@ struct PlanGatingTests {
         } catch let error as APIError {
             #expect(error.code == "plan_required")
         }
+        // Every report says the 30-day tab is locked, and today has nothing complete to compare
+        let today = try await api.screenTime(childId: mia.id, period: .today)
+        #expect(today.locked?.periods == ["30d"])
+        #expect(today.previousAverageMinutes == nil)
+        // Calendar days, whatever the phone's zone or calendar
+        #expect(ScreenTimeReport.day("2026-10-13").map { Int($0.timeIntervalSince1970) } == 1_791_849_600)
         api.entitlements.advancedReports = true
-        #expect(try await api.screenTime(childId: mia.id, period: .month).days.count == 30)
+        let month = try await api.screenTime(childId: mia.id, period: .month)
+        #expect(month.days.count == 30)
+        #expect(month.locked == nil)
+        #expect(month.completeDays == 29)
 
         api.entitlements.locationSharing = false
         await #expect(throws: APIError.self) { _ = try await api.location(childId: mia.id) }
@@ -331,6 +417,15 @@ struct PlanGatingTests {
         #expect(subscription.usage.childLimit == 5)
         #expect(!subscription.isSponsored)
         #expect(subscription.upgrade == nil)
+    }
+
+    @Test func sponsoredPlanNamesItsSponsorWhenTheServerSendsOne() throws {
+        let decoder = JSONDecoder()
+        let named = try decoder.decode(StoreInfo.self, from: Data(#"{"name":"VOUCHER","productId":"plus_pass_month","autoRenewing":false,"sponsor":"Rizal High"}"#.utf8))
+        #expect(named.title == "Sponsored by Rizal High")
+        // Older servers send no sponsor
+        let unnamed = try decoder.decode(StoreInfo.self, from: Data(#"{"name":"VOUCHER","autoRenewing":false}"#.utf8))
+        #expect(unnamed.title == "Sponsored plan")
     }
 
     @Test func organizationsJoinAndLeaveWithACode() async throws {
@@ -367,6 +462,78 @@ struct PlanGatingTests {
         try await api.removeBrowser(id: try #require(try await api.browsers().first?.id), confirmation: .password("ChangeMe123!"))
         #expect(try await api.browsers().isEmpty)
     }
+
+    @Test func browserPolicyYoutubeLevelIsOptionalBothWays() throws {
+        // Older servers send neither the level nor the choices
+        let old = try JSONDecoder().decode(BrowserPolicy.self, from: Data(#"{"version":2,"safeBrowsing":true,"safeSearch":true,"blockedCategories":[],"blockedDomains":[],"allowedDomains":[],"unknownSitesPolicy":"ALLOW","schedule":null}"#.utf8))
+        #expect(old.youtubeRestrict == nil && old.youtubeLevels == nil)
+        let encode = { (u: BrowserPolicyUpdate) in
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(u)) as? [String: Any] ?? [:]
+        }
+        // Left out, the server keeps the saved level; `schedule` is still sent as null
+        let body = try encode(old.update)
+        #expect(body["youtubeRestrict"] == nil && body.keys.contains("schedule"))
+        var strict = old
+        strict.youtubeRestrict = "STRICT"
+        #expect(try encode(strict.update)["youtubeRestrict"] as? String == "STRICT")
+    }
+
+    @Test func mockKeepsTheYoutubeLevelWhenLeftOut() async throws {
+        let api = MockEGuardAPI.seeded()
+        let child = try #require(try await api.children().first)
+        let policy = try await api.browserPolicy(childId: child.id)
+        #expect(policy.youtubeRestrict == "MODERATE")
+        var update = policy.update
+        update.youtubeRestrict = nil
+        #expect(try await api.updateBrowserPolicy(childId: child.id, policy: update).youtubeRestrict == "MODERATE")
+    }
+}
+
+@Suite("Protection editor against the mock server")
+struct ProtectionEditorTests {
+    @Test func savingForAChildWithoutADeviceIsSavedNotAnError() async throws {
+        let api = MockEGuardAPI.empty()
+        let model = AppModel.mock(api: api)
+        try await model.register(name: "Randy Cruz", email: "editor@example.com", password: "ChangeMe123!")
+        let child = try await api.createChild(name: "Mia", age: 12, profile: nil)
+
+        let editor = ProtectionEditorViewModel(childId: child.id, key: "BEDTIME")
+        await editor.load(api: api)
+        editor.config = editor.config.setting("enabled", to: .bool(true)).setting("start", to: .string("20:30")).setting("end", to: .string("06:00"))
+        await editor.save(api: api)
+        #expect(editor.errorMessage == nil)
+        #expect(editor.notice != nil)
+        #expect(editor.protection?.policy["start"]?.stringValue == "20:30")
+    }
+
+    @Test func aSaveFromAnOlderViewIsRefusedAndShowsTheCurrentSetting() async throws {
+        let api = MockEGuardAPI.seeded()
+        api.loginForTests()
+        let mia = try #require(try await api.children().first)
+        let editor = ProtectionEditorViewModel(childId: mia.id, key: "LOCATION")
+        await editor.load(api: api)
+        let seen = try #require(editor.protection?.version)
+
+        // Another parent changes it meanwhile
+        _ = try await api.updateProtection(childId: mia.id, key: "LOCATION", config: .object(["sharing": .bool(false)]), baseVersion: seen)
+        editor.config = .object(["key": .string("LOCATION"), "sharing": .bool(true)])
+        await editor.save(api: api)
+        #expect(editor.errorMessage?.contains("changed by someone else") == true)
+        #expect(editor.protection?.version != seen)
+        #expect(editor.config["sharing"]?.boolValue == false)
+    }
+
+    @Test func equalBedtimesAreCaughtBeforeTheServer() async throws {
+        let api = MockEGuardAPI.seeded()
+        api.loginForTests()
+        let mia = try #require(try await api.children().first)
+        let editor = ProtectionEditorViewModel(childId: mia.id, key: "BEDTIME")
+        await editor.load(api: api)
+        editor.config = .object(["key": .string("BEDTIME"), "enabled": .bool(true), "start": .string("21:00"), "end": .string("21:00"), "days": .string("EVERY_DAY")])
+        await editor.save(api: api)
+        #expect(editor.errorMessage == "Bedtime needs different start and end times.")
+        #expect(editor.poller.batch == nil)
+    }
 }
 
 @Suite("Onboarding flow against the mock server")
@@ -392,7 +559,7 @@ struct OnboardingFlowTests {
         #expect(saved.batchId == nil)
         #expect(saved.saved.count == 10)
 
-        // After pairing an iPhone, a batch runs; WEB is guided and needs the parent's confirmation.
+        // After pairing an iPhone, a batch runs; LOCATION is guided and needs the parent's confirmation.
         api.simulatePairing(childId: child.id, platform: .ios)
         let override = JSONValue.object(["key": .string("SCREEN_TIME"), "dailyMinutes": .number(150), "weekendMinutes": .number(200)])
         let response = try await api.setup(childId: child.id, profile: "PROTECTED", overrides: [override])
@@ -402,11 +569,13 @@ struct OnboardingFlowTests {
         var batch = try await api.batch(id: batchId)
         batch = try await api.batch(id: batchId)
         #expect(!batch.done)
-        #expect(batch.items.first { $0.key == "WEB" }?.status == .awaitingParent)
+        #expect(batch.items.first { $0.key == "LOCATION" }?.status == .awaitingParent)
+        // iOS applies web filtering itself
+        #expect(batch.items.first { $0.key == "WEB" }?.devices.first?.isGuided == false)
         #expect(batch.items.first { $0.key == "SCREEN_TIME" }?.status == .verified)
         #expect(batch.items.first { $0.key == "SCREEN_TIME" }?.to == "2h 30m / day, 3h 20m weekends")
 
-        batch = try await api.confirmBatch(id: batchId)
+        batch = try await api.confirmBatch(id: batchId, key: nil)
         batch = try await api.batch(id: batchId)
         #expect(batch.done)
         #expect(batch.items.allSatisfy { $0.status == .verified })
@@ -420,7 +589,7 @@ struct OnboardingFlowTests {
         let api = MockEGuardAPI.seeded()
         let children = try await api.children()
         let mia = try #require(children.first)
-        let batch = try await api.updateProtection(childId: mia.id, key: "bedtime", config: .object(["enabled": .bool(true), "start": .string("21:00"), "end": .string("06:30"), "days": .string("SCHOOL_NIGHTS")]))
+        let batch = try #require(try await api.updateProtection(childId: mia.id, key: "bedtime", config: .object(["enabled": .bool(true), "start": .string("21:00"), "end": .string("06:30"), "days": .string("SCHOOL_NIGHTS")])).batch)
         let poller = BatchPoller()
         poller.start(batchId: batch.batchId, api: api, initial: batch)
         for _ in 0..<40 where poller.phase == .polling {
@@ -430,7 +599,7 @@ struct OnboardingFlowTests {
         #expect(poller.batch?.items.first?.status == .verified)
         let protections = try await api.protections(childId: mia.id)
         let label = protections.first { $0.key == "BEDTIME" }?.policyLabel ?? ""
-        #expect(label.hasPrefix("9:00") && label.hasSuffix("School nights"))
+        #expect(label.hasPrefix("9:00") && label.hasSuffix(", school nights"))
     }
 
     @Test func alertsResolveAndAppRulesChange() async throws {
@@ -461,8 +630,27 @@ struct ProtectionConfigTests {
         #expect(ProtectionConfigFormatter.label(key: "SCREEN_TIME", config: .object(["dailyMinutes": .number(180)])) == "3h / day")
         #expect(ProtectionConfigFormatter.label(key: "BEDTIME", config: .object(["enabled": .bool(false)])) == "Off")
         #expect(ProtectionConfigFormatter.label(key: "APP_RESTRICTIONS", config: .object(["maxAgeRating": .number(9)])) == "Apps rated 9+ and under")
-        #expect(ProtectionConfigFormatter.label(key: "WEB", config: .object(["mode": .string("FILTER"), "blockedSites": .number(42)])) == "Filtered, 42 sites blocked")
+        // The placeholder blockedSites count isn't named, as on the server
+        #expect(ProtectionConfigFormatter.label(key: "WEB", config: .object(["mode": .string("FILTER"), "blockedSites": .number(42)])) == "Adult and unsafe sites filtered")
         #expect(ProtectionConfigFormatter.label(key: "DOWNLOADS", config: .object(["requireApproval": .bool(true)])) == "Parent approval")
+        #expect(ProtectionConfigFormatter.label(key: "DOWNLOADS", config: .object(["requireApproval": .bool(false)])) == "Unrestricted")
+        #expect(ProtectionConfigFormatter.label(key: "LOCATION", config: .object(["sharing": .bool(false)])) == "Sharing off")
+        #expect(ProtectionConfigFormatter.label(key: "SCREEN_TIME", config: .object(["dailyMinutes": .number(180), "weekendMinutes": .number(180)])) == "3h / day")
+    }
+
+    @Test func editorShowsStoredValuesAndCatchesEqualBedtimes() {
+        #expect(ProtectionConfigEditor.options(ProtectionConfigEditor.minuteOptions, including: 270).contains(270))
+        #expect(ProtectionConfigEditor.options(ProtectionConfigEditor.ratingTiers, including: 13) == [4, 9, 12, 13, 16, 17, 18])
+        let same = JSONValue.object(["enabled": .bool(true), "start": .string("21:00"), "end": .string("21:00")])
+        #expect(ProtectionConfigEditor.problem(key: "BEDTIME", config: same) != nil)
+        #expect(ProtectionConfigEditor.problem(key: "BEDTIME", config: same.setting("enabled", to: .bool(false))) == nil)
+    }
+
+    @Test func editorCatchesScreenTimeOutsideFifteenMinutesToADay() {
+        let ok = JSONValue.object(["dailyMinutes": .number(150), "weekendMinutes": .number(1440)])
+        #expect(ProtectionConfigEditor.problem(key: "SCREEN_TIME", config: ok) == nil)
+        #expect(ProtectionConfigEditor.problem(key: "SCREEN_TIME", config: ok.setting("dailyMinutes", to: .number(10))) != nil)
+        #expect(ProtectionConfigEditor.problem(key: "SCREEN_TIME", config: ok.setting("weekendMinutes", to: .number(0))) != nil)
     }
 
     @Test func defaultsFollowTheProfileRules() {

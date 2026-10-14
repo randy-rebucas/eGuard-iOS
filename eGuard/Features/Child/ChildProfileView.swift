@@ -19,6 +19,10 @@ struct ChildProfileView: View {
     @State private var section: Section = .overview
     @State private var isConfirmingDelete = false
     @State private var deleteError: String?
+    @State private var isPairing = false
+    @State private var isLoadingMoreHistory = false
+    @State private var historyMoreError: String?
+    @State private var photoError: String?
 
     var body: some View {
         ScrollView {
@@ -53,6 +57,10 @@ struct ChildProfileView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Edit child", systemImage: "pencil") { router.push(.editChild(childId: childId)) }
+                    // A photo can be changed in Edit child; this was the only way to go back to initials
+                    if state.value?.child.photoUrl != nil {
+                        Button("Remove photo", systemImage: "person.crop.circle.badge.minus") { Task { await removePhoto() } }
+                    }
                     Button("Change protection profile", systemImage: "shield.lefthalf.filled") { router.push(.protectionProfile(childId: childId)) }
                     Button("Manage protection", systemImage: "slider.horizontal.3") { router.push(.protections(childId: childId)) }
                     if model.user?.isAdmin == true {
@@ -65,6 +73,16 @@ struct ChildProfileView: View {
             }
         }
         .task { await loadChild() }
+        // Every tab comes from the child's detail; History has its own first page
+        .refreshable {
+            await loadChild()
+            if section == .history {
+                history = await load { try await model.api.history(childId: childId, before: nil) }
+            }
+        }
+        .sheet(isPresented: $isPairing, onDismiss: { Task { await loadChild() } }) {
+            PairingCodeView(childId: childId)
+        }
         .task(id: section) {
             if section == .history, history.value == nil {
                 history = await load { try await model.api.history(childId: childId, before: nil) }
@@ -82,6 +100,21 @@ struct ChildProfileView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(deleteError ?? "")
+        }
+        .alert("Couldn't remove the photo", isPresented: Binding(get: { photoError != nil }, set: { if !$0 { photoError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(photoError ?? "")
+        }
+    }
+
+    private func removePhoto() async {
+        do {
+            try await model.api.deletePhoto(childId: childId)
+            await loadChild()
+            await model.refreshDashboard()
+        } catch {
+            photoError = error.localizedDescription
         }
     }
 
@@ -147,7 +180,8 @@ struct ChildProfileView: View {
                         .tint(EGuardColors.primary)
                 }
                 if detail.child.deviceCount == 0 {
-                    Text("Pair a device to see screen time.")
+                    // Screen time comes from phones and tablets; a browser alone doesn't report it
+                    Text(detail.child.isBrowserOnly ? "Browser only. Pair a phone or tablet to see screen time." : "Pair a device to see screen time.")
                         .font(EGuardTypography.caption)
                         .foregroundStyle(EGuardColors.textSecondary)
                 }
@@ -181,16 +215,18 @@ struct ChildProfileView: View {
                 EGuardCard {
                     SectionHeader(title: "Devices")
                     ForEach(detail.devices) { device in
-                        EGuardNavRow(title: device.name, subtitle: "\(device.state.title) · \(device.lastSeenLabel ?? "")", symbolName: device.symbolName, tint: device.state == .healthy ? EGuardColors.success : EGuardColors.warning) {
+                        EGuardNavRow(title: device.name, subtitle: [device.statusTitle, device.lastSeenLabel].compactMap { $0 }.joined(separator: " · "), symbolName: device.symbolName, tint: deviceTint(device)) {
                             router.push(.deviceDetail(deviceId: device.id))
                         }
                         if device.id != detail.devices.last?.id { Divider() }
                     }
                 }
-            } else {
-                Button("Set Up Supervision") { router.push(.setupProgress(childId: childId, profile: "PROTECTED", overrides: [])) }
-                    .buttonStyle(.eGuardPrimary)
             }
+            // Pairs only, as the web's "Pair a device": the child's saved protections apply when the device pairs.
+            // (Running Setup here would send a profile and replace whatever the parent had set.)
+            Button("Pair a device") { isPairing = true }
+                .buttonStyle(detail.devices.isEmpty ? AnyButtonStyle(.eGuardPrimary) : AnyButtonStyle(.eGuardSecondary))
+                .accessibilityIdentifier("child.pairDevice")
         }
     }
 
@@ -220,7 +256,7 @@ struct ChildProfileView: View {
                 EGuardValueRow(label: "Waiting for approval", value: "\(detail.pendingApprovals)")
             }
             Button(detail.pendingApprovals > 0 ? "Review \(detail.pendingApprovals) Request\(detail.pendingApprovals == 1 ? "" : "s")" : "Manage Apps") {
-                router.push(.appsManagement(childId: childId))
+                router.push(.appsManagement(childId: childId, pending: detail.pendingApprovals > 0))
             }
             .buttonStyle(.eGuardPrimary)
         }
@@ -234,7 +270,7 @@ struct ChildProfileView: View {
                         router.push(.protectionEditor(childId: childId, key: check.key))
                     } label: {
                         HStack {
-                            ChecklistRow(title: check.name, detail: check.detail, status: check.status.healthStatus)
+                            ChecklistRow(title: check.name, detail: check.detail, status: check.displayStatus)
                             Image(systemName: "chevron.right")
                                 .font(.footnote.weight(.semibold))
                                 .foregroundStyle(EGuardColors.neutral)
@@ -278,10 +314,31 @@ struct ChildProfileView: View {
                     if change.id != page.changes.last?.id { Divider() }
                 }
             }
+            // The server sends 30 at a time; older changes were unreachable without this
+            if let before = page.nextBefore {
+                Button(isLoadingMoreHistory ? "Loading…" : "Load more") { Task { await loadMoreHistory(page, before: before) } }
+                    .buttonStyle(.eGuardSecondary)
+                    .disabled(isLoadingMoreHistory)
+                    .accessibilityIdentifier("child.history.loadMore")
+            }
+            InlineError(message: historyMoreError)
+        }
+    }
+
+    private func loadMoreHistory(_ page: HistoryPage, before: Date) async {
+        isLoadingMoreHistory = true
+        historyMoreError = nil
+        defer { isLoadingMoreHistory = false }
+        do {
+            let next = try await model.api.history(childId: childId, before: before)
+            history = .loaded(HistoryPage(changes: page.changes + next.changes, nextBefore: next.nextBefore))
+        } catch {
+            historyMoreError = error.localizedDescription
         }
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         ChildProfileView(childId: "child_1")
@@ -289,3 +346,4 @@ struct ChildProfileView: View {
     .environment(AppModel.preview())
     .environment(AppRouter())
 }
+#endif

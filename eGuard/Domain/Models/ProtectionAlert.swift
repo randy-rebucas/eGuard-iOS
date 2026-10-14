@@ -93,7 +93,7 @@ nonisolated enum AlertGenerator {
                     date: report.generatedAt,
                     feature: check.feature
                 )
-            case .pass, .unsupported:
+            case .pass, .unsupported, .setByYou:
                 nil
             }
         }

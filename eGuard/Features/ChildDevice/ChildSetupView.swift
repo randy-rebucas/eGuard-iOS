@@ -278,6 +278,7 @@ struct ChildSetupView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         ChildSetupView(startStep: .code)
@@ -285,3 +286,4 @@ struct ChildSetupView: View {
     .environment(AppModel.mock(mode: .unset))
     .environment(AppRouter())
 }
+#endif

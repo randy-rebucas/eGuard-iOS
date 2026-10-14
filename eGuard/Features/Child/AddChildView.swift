@@ -13,6 +13,10 @@ final class AddChildViewModel {
     var isSubmitting = false
     var errorMessage: String?
     private(set) var hasLoaded = false
+    /// What the server has: only fields that differ are sent, so this form can't undo another parent's rename.
+    private var saved: (name: String, age: Int)?
+    /// Set once the child exists, so a retry after a failed photo upload doesn't add them a second time.
+    private var createdId: String?
 
     static let ageRange = 0...17
 
@@ -26,6 +30,7 @@ final class AddChildViewModel {
         if let child = model.children.first(where: { $0.id == childId }) {
             name = child.name
             age = child.age
+            saved = (child.name, child.age)
             if let url = child.photoUrl { photoData = await model.photo(for: childId, url: url) }
         }
     }
@@ -52,10 +57,20 @@ final class AddChildViewModel {
         defer { isSubmitting = false }
         do {
             let id: String
-            if let childId {
-                id = try await model.api.updateChild(id: childId, name: name.trimmingCharacters(in: .whitespaces), age: age).child.id
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            if let existing = childId ?? createdId {
+                let newName = trimmed == saved?.name ? nil : trimmed
+                let newAge = age == saved?.age ? nil : age
+                if newName != nil || newAge != nil {
+                    id = try await model.api.updateChild(id: existing, name: newName, age: newAge).child.id
+                    saved = (trimmed, age)
+                } else {
+                    id = existing
+                }
             } else {
-                id = try await model.api.createChild(name: name.trimmingCharacters(in: .whitespaces), age: age, profile: nil).id
+                id = try await model.api.createChild(name: trimmed, age: age, profile: nil).id
+                createdId = id
+                saved = (trimmed, age)
             }
             if photoItem != nil, let photoData {
                 _ = try await model.api.uploadPhoto(childId: id, data: photoData, contentType: "image/jpeg")
@@ -190,6 +205,7 @@ struct AddChildView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         AddChildView(childId: nil)
@@ -197,3 +213,4 @@ struct AddChildView: View {
     .environment(AppModel.mock(signedIn: true))
     .environment(AppRouter())
 }
+#endif

@@ -7,6 +7,7 @@ struct PrivacyView: View {
     @State private var state: LoadState<PrivacySettings> = .loading
     @State private var isConfirmingHistoryOff = false
     @State private var errorMessage: String?
+    @State private var isSaving = false
 
     private var canManage: Bool { model.user?.isAdmin ?? false }
 
@@ -43,7 +44,7 @@ struct PrivacyView: View {
                         }
                     }
                     .tint(EGuardColors.primary)
-                    .disabled(!canManage)
+                    .disabled(!canManage || isSaving)
                     Divider()
                     Toggle(isOn: Binding(
                         get: { settings.shareAnalytics },
@@ -60,7 +61,7 @@ struct PrivacyView: View {
                         }
                     }
                     .tint(EGuardColors.primary)
-                    .disabled(!canManage)
+                    .disabled(!canManage || isSaving)
                 }
             }
             InlineError(message: errorMessage)
@@ -78,7 +79,7 @@ struct PrivacyView: View {
 
             EGuardCard {
                 SectionHeader(title: "Privacy questions")
-                Text("Ask about your family's data, or request a copy or deletion, by emailing \(EGuardPublisher.name).")
+                Text("Ask about your family's data by emailing \(EGuardPublisher.name). You can download a copy, or delete your account and its data, in Settings › Account.")
                     .font(EGuardTypography.callout)
                     .foregroundStyle(EGuardColors.textSecondary)
                 EGuardNavRow(title: "Privacy Policy", subtitle: "What eGuard collects, why, and for how long", symbolName: "doc.text.fill", tint: EGuardColors.primary) {
@@ -95,6 +96,8 @@ struct PrivacyView: View {
         .navigationTitle("Privacy")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadPrivacy() }
+        // Another parent (the admin) may have changed these meanwhile
+        .refreshable { await loadPrivacy() }
         .confirmationDialog("Turn off location history?", isPresented: $isConfirmingHistoryOff, titleVisibility: .visible) {
             Button("Turn Off and Delete History", role: .destructive) { Task { await update(PrivacyPatch(keepLocationHistory: false)) } }
             Button("Cancel", role: .cancel) {}
@@ -107,7 +110,11 @@ struct PrivacyView: View {
         state = await load { try await model.api.privacy() }
     }
 
+    /// One change at a time, so answers can't arrive out of order and show an older state.
     private func update(_ patch: PrivacyPatch) async {
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
         do {
             state = .loaded(try await model.api.updatePrivacy(patch))
             errorMessage = nil
@@ -127,6 +134,7 @@ struct PrivacyView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         PrivacyView()
@@ -134,3 +142,4 @@ struct PrivacyView: View {
     .environment(AppModel.preview())
     .environment(AppRouter())
 }
+#endif

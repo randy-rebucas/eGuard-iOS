@@ -18,12 +18,22 @@ nonisolated enum BedtimeDays: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    /// Calendar weekdays (Sunday = 1) on which the window starts. School nights are Sunday to Thursday.
-    var startWeekdays: [Int] {
+    /// Calendar weekdays (Sunday = 1) on which a window starting at `start` begins. School nights are Sunday to
+    /// Thursday, and a window belongs to the night it starts on, or to the evening before when it starts after
+    /// midnight (before 12:00), as the server's `bedtimeActive` defines it. So a school-nights window from 00:30
+    /// starts on Monday to Friday mornings.
+    func startWeekdays(startingAt start: TimeOfDay) -> [Int] {
         switch self {
         case .everyDay: [1, 2, 3, 4, 5, 6, 7]
-        case .schoolNights: [1, 2, 3, 4, 5]
+        case .schoolNights: start.hour < 12 ? [2, 3, 4, 5, 6] : [1, 2, 3, 4, 5]
         }
+    }
+
+    /// The days a set of registered per-weekday schedules stands for, or nil when they match no setting for a
+    /// window starting at `start` (e.g. registered by an older build with the other rule): reported as not set.
+    static func registered(startWeekdays: Set<Int>, startingAt start: TimeOfDay) -> BedtimeDays? {
+        guard !startWeekdays.isEmpty else { return nil }
+        return Set(BedtimeDays.schoolNights.startWeekdays(startingAt: start)) == startWeekdays ? .schoolNights : nil
     }
 }
 
@@ -35,13 +45,15 @@ nonisolated struct ActivityScheduleSnapshot: Equatable, Sendable {
     var isDailyLimitMonitoring = false
     var gamingLimitMinutes: Int?
     var socialAppsLimitMinutes: Int?
-    /// The whole-device daily allowance registered for the child device, in minutes.
-    var screenTimeLimitMinutes: Int?
+    /// The whole-device daily allowance registered for the child device, in minutes: Monday to Friday, and
+    /// Saturday and Sunday. The same value twice when one schedule covers every day.
+    var screenTimeWeekdayMinutes: Int?
+    var screenTimeWeekendMinutes: Int?
 
     static let empty = ActivityScheduleSnapshot()
 
     var isMonitoringAnything: Bool {
-        isDowntimeScheduled || isDailyLimitMonitoring || screenTimeLimitMinutes != nil
+        isDowntimeScheduled || isDailyLimitMonitoring || screenTimeWeekdayMinutes != nil
     }
 }
 
@@ -52,8 +64,9 @@ protocol ActivityScheduleService: AnyObject {
     func stopDowntime()
     func scheduleDailyLimits(gaming: DailyLimit?, socialApps: DailyLimit?) throws
     func stopDailyLimits()
-    /// The child device's daily screen-time allowance over the apps the family chose to count.
-    func scheduleScreenTimeLimit(minutes: Int, selection: ActivitySelectionSnapshot) throws
+    /// The child device's daily screen-time allowance over the apps the family chose to count: one value for
+    /// Monday to Friday, one for Saturday and Sunday. Doesn't re-register when nothing changed.
+    func scheduleScreenTimeLimit(weekdayMinutes: Int, weekendMinutes: Int, selection: ActivitySelectionSnapshot) throws
     func stopScreenTimeLimit()
     func stopAll()
 

@@ -62,7 +62,7 @@ final class CoreLocationReporter: NSObject, LocationReporting, CLLocationManager
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         let fix = locations.last.map { location in
-            LocationFix(lat: location.coordinate.latitude, lng: location.coordinate.longitude, accuracyM: max(location.horizontalAccuracy, 0), placeLabel: nil)
+            LocationFix(lat: location.coordinate.latitude, lng: location.coordinate.longitude, accuracyM: max(location.horizontalAccuracy, 0), placeLabel: nil, at: location.timestamp)
         }
         Task { @MainActor in
             fixContinuation?.resume(returning: fix)

@@ -177,7 +177,8 @@ struct AccountView: View {
         defer { isExporting = false }
         do {
             let data = try await model.api.exportData()
-            let url = FileManager.default.temporaryDirectory.appending(path: "eguard-family-export.json")
+            // Removed again on sign-out (AppModel.handleUnauthorized)
+            let url = AppModel.exportURL
             try data.write(to: url, options: [.atomic, .completeFileProtection])
             exportFile = ExportFile(url: url)
             errorMessage = nil
@@ -213,6 +214,7 @@ struct ChangePasswordView: View {
     @State private var confirm = ""
     @State private var errorMessage: String?
     @State private var isSaving = false
+    @State private var savedMessage: String?
 
     private var validation: String? {
         if current.isEmpty { return nil }
@@ -226,10 +228,16 @@ struct ChangePasswordView: View {
             ScreenHeader(title: "Change password", subtitle: "Your other devices are signed out afterwards. This one stays signed in.")
             VStack(spacing: EGuardSpacing.sm) {
                 EGuardTextField(label: "Current password", placeholder: "Current password", text: $current, symbolName: "lock", isSecure: true, contentType: .password)
-                EGuardTextField(label: "New password", placeholder: "At least 10 characters", text: $next, symbolName: "lock.rotation", isSecure: true)
-                EGuardTextField(label: "Confirm new password", placeholder: "Repeat the new password", text: $confirm, symbolName: "lock.rotation", isSecure: true)
+                // .newPassword: iOS offers a strong password and updates the saved one
+                EGuardTextField(label: "New password", placeholder: "At least 10 characters", text: $next, symbolName: "lock.rotation", isSecure: true, contentType: .newPassword)
+                EGuardTextField(label: "Confirm new password", placeholder: "Repeat the new password", text: $confirm, symbolName: "lock.rotation", isSecure: true, contentType: .newPassword)
             }
             InlineError(message: errorMessage ?? validation)
+            if let savedMessage {
+                Label(savedMessage, systemImage: "checkmark.circle.fill")
+                    .font(EGuardTypography.callout)
+                    .foregroundStyle(EGuardColors.success)
+            }
         } actions: {
             Button(isSaving ? "Saving…" : "Change Password") { Task { await save() } }
                 .buttonStyle(.eGuardPrimary)
@@ -243,9 +251,13 @@ struct ChangePasswordView: View {
         isSaving = true
         defer { isSaving = false }
         do {
-            _ = try await model.api.changePassword(current: current, next: next)
-            router.pop()
+            let result = try await model.api.changePassword(current: current, next: next)
+            // Say it worked (and that other devices were signed out) instead of leaving without a word
+            savedMessage = result.message ?? "Password changed. Other sessions were signed out."
+            errorMessage = nil
+            current = ""; next = ""; confirm = ""
         } catch {
+            savedMessage = nil
             errorMessage = error.localizedDescription
         }
     }
@@ -269,9 +281,9 @@ struct SessionsView: View {
                 EGuardCard {
                     ForEach(sessions) { session in
                         HStack(spacing: EGuardSpacing.sm) {
-                            IconTile(symbolName: session.userAgent.localizedCaseInsensitiveContains("iphone") ? "iphone" : "laptopcomputer", tint: session.current ? EGuardColors.success : EGuardColors.neutral)
+                            IconTile(symbolName: (session.userAgent ?? "").localizedCaseInsensitiveContains("iphone") ? "iphone" : "laptopcomputer", tint: session.current ? EGuardColors.success : EGuardColors.neutral)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(session.userAgent).font(EGuardTypography.label).lineLimit(1)
+                                Text(session.userAgent ?? "Unknown device").font(EGuardTypography.label).lineLimit(1)
                                 Text("Last seen \((session.lastSeenAt ?? session.createdAt).verifiedDescription())")
                                     .font(EGuardTypography.caption)
                                     .foregroundStyle(EGuardColors.textSecondary)
@@ -286,22 +298,41 @@ struct SessionsView: View {
                 if let message {
                     Label(message, systemImage: "checkmark.circle.fill").font(EGuardTypography.caption).foregroundStyle(EGuardColors.success)
                 }
+                InlineError(message: signOutError)
             }
         } actions: {
-            Button("Sign Out Other Devices") {
-                Task {
-                    if let count = try? await model.api.signOutOtherSessions() {
-                        message = count == 0 ? "No other sessions were signed in." : "Signed out \(count) other session\(count == 1 ? "" : "s")."
-                        await loadSessions()
-                    }
-                }
-            }
-            .buttonStyle(.eGuardSecondary)
-            .disabled((state.value?.count ?? 0) <= 1)
+            Button(isSigningOut ? "Signing out…" : "Sign Out Other Devices") { isConfirming = true }
+                .buttonStyle(.eGuardSecondary)
+                .disabled((state.value?.count ?? 0) <= 1 || isSigningOut)
         }
         .navigationTitle("Sessions")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadSessions() }
+        .refreshable { await loadSessions() }
+        // As Android and the web: ending other sessions signs those devices out at once, so ask first
+        .confirmationDialog("Sign out every other device?", isPresented: $isConfirming, titleVisibility: .visible) {
+            Button("Sign Out Other Devices", role: .destructive) { Task { await signOutOthers() } }
+        } message: {
+            Text("They'll need your password to sign in again. This device stays signed in.")
+        }
+    }
+
+    @State private var isConfirming = false
+    @State private var isSigningOut = false
+    @State private var signOutError: String?
+
+    private func signOutOthers() async {
+        isSigningOut = true
+        signOutError = nil
+        defer { isSigningOut = false }
+        do {
+            let count = try await model.api.signOutOtherSessions()
+            message = count == 0 ? "No other sessions were signed in." : "Signed out \(count) other session\(count == 1 ? "" : "s")."
+            await loadSessions()
+        } catch {
+            message = nil
+            signOutError = error.localizedDescription
+        }
     }
 
     private func loadSessions() async {
@@ -314,6 +345,8 @@ struct LinkedSignInsView: View {
     @Environment(AppModel.self) private var model
     @State private var state: LoadState<[LinkedIdentity]> = .loading
     @State private var errorMessage: String?
+    /// The identity being unlinked: its button ignores taps until the request finishes.
+    @State private var unlinkingId: String?
 
     var body: some View {
         EGuardScreen {
@@ -340,9 +373,10 @@ struct LinkedSignInsView: View {
                                     .foregroundStyle(EGuardColors.textSecondary)
                             }
                             Spacer()
-                            Button("Unlink") { Task { await unlink(identity) } }
+                            Button(unlinkingId == identity.id ? "Unlinking…" : "Unlink") { Task { await unlink(identity) } }
                                 .font(EGuardTypography.label)
                                 .foregroundStyle(EGuardColors.danger)
+                                .disabled(unlinkingId != nil)
                         }
                         .padding(.vertical, EGuardSpacing.xxs)
                         if identity.id != identities.last?.id { Divider() }
@@ -361,6 +395,7 @@ struct LinkedSignInsView: View {
         .navigationTitle("Linked sign-ins")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadIdentities() }
+        .refreshable { await loadIdentities() }
     }
 
     private func loadIdentities() async {
@@ -368,6 +403,9 @@ struct LinkedSignInsView: View {
     }
 
     private func unlink(_ identity: LinkedIdentity) async {
+        guard unlinkingId == nil else { return }
+        unlinkingId = identity.id
+        defer { unlinkingId = nil }
         do {
             try await model.api.deleteIdentity(id: identity.id)
             errorMessage = nil
@@ -440,6 +478,7 @@ struct DeleteAccountView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         AccountView()
@@ -447,3 +486,4 @@ struct DeleteAccountView: View {
     .environment(AppModel.preview())
     .environment(AppRouter())
 }
+#endif

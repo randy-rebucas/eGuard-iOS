@@ -125,7 +125,9 @@ struct LocationView: View {
             .clipShape(EGuardShapes.card)
             .overlay(alignment: .center) {
                 if response.current == nil {
-                    Text("Waiting for the first location…")
+                    // As the web: name the device when none has said yet whether it shares
+                    Text(response.waitingForReport.map { "Waiting for \($0.deviceName) to report whether location sharing is on." } ?? "Waiting for the first location…")
+                        .multilineTextAlignment(.center)
                         .font(EGuardTypography.caption)
                         .padding(EGuardSpacing.sm)
                         .background(.regularMaterial, in: EGuardShapes.button)
@@ -147,13 +149,21 @@ struct LocationView: View {
                 Text(response.current?.freshnessLabel ?? "No location yet")
                     .font(EGuardTypography.caption)
                     .foregroundStyle(EGuardColors.textSecondary)
+                if let note = response.note, !note.isEmpty {
+                    Label(note, systemImage: "info.circle")
+                        .font(EGuardTypography.caption)
+                        .foregroundStyle(EGuardColors.textSecondary)
+                        .padding(.top, EGuardSpacing.xxs)
+                        .accessibilityIdentifier("location.note")
+                }
             }
         }
     }
 
     private func visitsCard(_ response: LocationResponse) -> some View {
         VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
-            SectionHeader(title: "Today", actionTitle: response.history.enabled ? "View All" : nil) { isShowingAllVisits = true }
+            // Today's and yesterday's visits (a stay begun earlier counts), so not "Today"
+            SectionHeader(title: "Recent places", actionTitle: response.history.enabled ? "View All" : nil) { isShowingAllVisits = true }
             EGuardCard {
                 if !response.history.enabled {
                     Label("Location history is off", systemImage: "clock.arrow.circlepath")
@@ -166,12 +176,13 @@ struct LocationView: View {
                             .buttonStyle(.eGuardSecondary)
                     }
                 } else if response.history.visits.isEmpty {
-                    Text("No places recorded yet today.")
+                    Text("No places recorded today or yesterday.")
                         .font(EGuardTypography.callout)
                         .foregroundStyle(EGuardColors.textSecondary)
                 } else {
+                    let severalDays = Set(response.history.visits.map(\.day.key)).count > 1
                     ForEach(response.history.visits) { visit in
-                        VisitRow(visit: visit)
+                        VisitRow(visit: visit, showDay: severalDays)
                         if visit.id != response.history.visits.last?.id { Divider() }
                     }
                 }
@@ -182,20 +193,23 @@ struct LocationView: View {
 
 struct VisitRow: View {
     let visit: Visit
+    /// In a list covering more than one day without day headers: say which day.
+    var showDay = false
 
     var body: some View {
+        let passing = !(visit.stayed ?? true)
         HStack(spacing: EGuardSpacing.sm) {
-            IconTile(symbolName: "mappin.circle.fill", tint: EGuardColors.success)
+            IconTile(symbolName: passing ? "figure.walk.circle.fill" : "mappin.circle.fill", tint: passing ? EGuardColors.neutral : EGuardColors.success)
             VStack(alignment: .leading, spacing: 2) {
-                Text(visit.placeLabel).font(EGuardTypography.label)
-                Text(visit.deviceName).font(EGuardTypography.caption).foregroundStyle(EGuardColors.textSecondary)
+                Text(visit.title).font(EGuardTypography.label)
+                Text(showDay ? "\(visit.day.label), \(visit.detail)" : visit.detail)
+                    .font(EGuardTypography.caption)
+                    .foregroundStyle(EGuardColors.textSecondary)
             }
             Spacer()
-            Text(visit.timeLabel)
-                .font(EGuardTypography.caption)
-                .foregroundStyle(EGuardColors.textSecondary)
         }
         .padding(.vertical, EGuardSpacing.xxs)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -211,6 +225,8 @@ struct VisitsHistoryView: View {
     @State private var retentionDays: Int?
     @State private var error: String?
     @State private var isLoading = true
+    @State private var isLoadingMore = false
+    @State private var loadMoreError: String?
 
     private var groups: [(DayGroup, [Visit])] {
         var order: [DayGroup] = []
@@ -246,8 +262,10 @@ struct VisitsHistoryView: View {
                         }
                     }
                     if nextBefore != nil {
-                        Button("Load more") { Task { await loadPage(reset: false) } }
+                        Button(isLoadingMore ? "Loading…" : "Load more") { Task { await loadPage(reset: false) } }
                             .buttonStyle(.eGuardSecondary)
+                            .disabled(isLoadingMore)
+                        InlineError(message: loadMoreError)
                     }
                     if let retentionDays {
                         Text("Visits are kept for \(retentionDays) days.")
@@ -266,7 +284,14 @@ struct VisitsHistoryView: View {
     }
 
     private func loadPage(reset: Bool) async {
+        // One page at a time: a second tap mustn't append the same page twice
+        if !reset {
+            guard !isLoadingMore else { return }
+            isLoadingMore = true
+        }
         isLoading = reset
+        loadMoreError = nil
+        defer { isLoadingMore = false }
         do {
             let page = try await model.api.visits(childId: childId, before: reset ? nil : nextBefore)
             enabled = page.enabled
@@ -275,12 +300,14 @@ struct VisitsHistoryView: View {
             nextBefore = page.nextBefore
             error = nil
         } catch {
-            self.error = error.localizedDescription
+            // A failed "Load more" keeps what's shown
+            if reset { self.error = error.localizedDescription } else { loadMoreError = error.localizedDescription }
         }
         isLoading = false
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         LocationView(childId: "child_1")
@@ -288,3 +315,4 @@ struct VisitsHistoryView: View {
     .environment(AppModel.preview())
     .environment(AppRouter())
 }
+#endif
