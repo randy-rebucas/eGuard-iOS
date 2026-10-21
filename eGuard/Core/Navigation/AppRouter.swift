@@ -7,6 +7,8 @@ nonisolated enum AppRoute: Hashable, Sendable {
     case welcome
     case childSetup
     case createAccount
+    /// Create Account's code step. The `signup` ticket lives only in the in-memory path.
+    case signupCode(SignupStarted)
     case signIn
     case forgotPassword
     case twoFactorCode(TwoFactorChallenge)

@@ -16,7 +16,12 @@ protocol EGuardAPIService: AnyObject {
     func helpArticle(slug: String) async throws -> HelpArticle
 
     // Auth
-    func register(name: String, email: String, password: String, familyName: String?) async throws -> AuthResponse
+    /// Create Account, step 1: emails a 6-digit code. No account and no session yet.
+    func register(name: String, email: String, password: String, familyName: String?) async throws -> SignupStarted
+    /// Create Account, step 2: the emailed code creates the account (email verified) and signs in.
+    func verifySignup(signup: String, code: String) async throws -> AuthResponse
+    /// "Send a new code" for a pending sign-up. The previous code stops working.
+    func resendSignupCode(signup: String) async throws -> SignupCodeSent
     func login(email: String, password: String) async throws -> LoginResult
     /// `nonce` is the raw value whose hash was put in the Apple request. Servers that don't know the
     /// field yet may refuse it; callers retry without it on a 400 that names the nonce.

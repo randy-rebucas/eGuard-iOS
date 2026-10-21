@@ -110,6 +110,7 @@ struct RootView: View {
         case .welcome: WelcomeView()
         case .childSetup: ChildSetupView(startStep: .code)
         case .createAccount: CreateAccountView()
+        case .signupCode(let signup): SignupCodeView(signup: signup)
         case .signIn: SignInView()
         case .forgotPassword: ForgotPasswordView()
         case .twoFactorCode(let challenge): TwoFactorCodeView(challenge: challenge)

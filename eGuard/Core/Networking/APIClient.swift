@@ -47,6 +47,8 @@ final class APIClient {
     static let defaultBaseURL = URL(string: "https://www.eguard.family/api/mobile/v1")!
 
     let baseURL: URL
+    /// Sent as `X-eGuard-Install` on every call, so the server can tell this install from the parent's other phones.
+    let installID: String
     private let sessionStore: SessionStore
     private let urlSession: URLSession
     private let decoder: JSONDecoder
@@ -64,8 +66,10 @@ final class APIClient {
         return URLSession(configuration: configuration)
     }()
 
-    init(baseURL: URL = APIClient.defaultBaseURL, sessionStore: SessionStore, urlSession: URLSession = APIClient.defaultSession) {
+    /// `installID`: from `InstallID.load` in the app. The default, a fresh id, is for tests and previews.
+    init(baseURL: URL = APIClient.defaultBaseURL, sessionStore: SessionStore, installID: String = UUID().uuidString, urlSession: URLSession = APIClient.defaultSession) {
         self.baseURL = baseURL
+        self.installID = installID
         self.sessionStore = sessionStore
         self.urlSession = urlSession
         decoder = APIClient.makeDecoder()
@@ -121,6 +125,7 @@ final class APIClient {
         urlRequest.httpMethod = request.method.rawValue
         urlRequest.httpBody = request.body
         urlRequest.setValue("ios", forHTTPHeaderField: "X-eGuard-Client")
+        urlRequest.setValue(installID, forHTTPHeaderField: "X-eGuard-Install")
         urlRequest.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         if let contentType = request.contentType {

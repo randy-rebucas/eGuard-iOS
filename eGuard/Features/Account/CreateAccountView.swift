@@ -2,7 +2,7 @@ import AuthenticationServices
 import Observation
 import SwiftUI
 
-/// Validates the sign-up form and registers the parent on the server.
+/// Validates the sign-up form and starts the sign-up on the server, which emails a 6-digit code.
 @Observable
 final class CreateAccountViewModel {
     var fullName = ""
@@ -22,27 +22,29 @@ final class CreateAccountViewModel {
 
     var canSubmit: Bool { validationMessage == nil && !isSubmitting }
 
-    /// Creates the account. Returns true when the app should continue to Add Child.
-    func submit(model: AppModel) async -> Bool {
+    /// Step 1: sends the form, and the server emails a code. Returns the sign-up to finish on the code screen, or nil
+    /// with `errorMessage` set. The answer doesn't say whether the email already has an account: that inbox gets a
+    /// "you already have an account" email instead of a code.
+    func submit(model: AppModel) async -> SignupStarted? {
         guard canSubmit else {
             errorMessage = validationMessage
-            return false
+            return nil
         }
         isSubmitting = true
         defer { isSubmitting = false }
         do {
-            try await model.register(name: fullName, email: email, password: password)
+            let signup = try await model.register(name: fullName, email: email, password: password)
             errorMessage = nil
-            return true
+            highlightedField = nil
+            return signup
         } catch let error as APIError {
+            // Field messages, and the "appeared in a data breach" password message, are shown as the server words them
             highlightedField = error.fieldName
-            errorMessage = error.code == "conflict"
-                ? "That email already has an eGuard account. Sign in instead."
-                : error.localizedDescription
-            return false
+            errorMessage = error.localizedDescription
+            return nil
         } catch {
             errorMessage = error.localizedDescription
-            return false
+            return nil
         }
     }
 
@@ -149,8 +151,8 @@ struct CreateAccountView: View {
 
             Button(viewModel.isSubmitting ? "Creating account…" : "Create account") {
                 Task {
-                    if await viewModel.submit(model: model) {
-                        router.push(.addChild)
+                    if let signup = await viewModel.submit(model: model) {
+                        router.push(.signupCode(signup))
                     }
                 }
             }
@@ -188,7 +190,7 @@ struct CreateAccountView: View {
             }
 
             EGuardCard {
-                Label("Children never get accounts. You'll add them after signing up, and we'll email you a verification link.", systemImage: "lock.shield")
+                Label("Children never get accounts. You'll add them after signing up. We'll email you a code to confirm your address.", systemImage: "lock.shield")
                     .font(EGuardTypography.caption)
                     .foregroundStyle(EGuardColors.textSecondary)
             }
@@ -213,6 +215,166 @@ struct CreateAccountView: View {
                 .foregroundStyle(EGuardColors.textSecondary)
             Rectangle().fill(EGuardColors.divider).frame(height: 1)
         }
+    }
+}
+
+/// Create Account, step 2: the 6-digit code from the email (`POST /auth/register/verify`), and "Send a new code"
+/// (`POST /auth/register/resend`). The `signup` ticket stays in memory only.
+@Observable
+final class SignupCodeViewModel {
+    private(set) var signup: SignupStarted
+    var code = ""
+    var errorMessage: String?
+    var notice: String?
+    var isSubmitting = false
+    var isResending = false
+    /// The server's reason the sign-up ended (expired, used up, or out of tries): the form has to be filled in again.
+    var endedMessage: String?
+    /// The email got an account in the minutes between the steps (`409`): sign in instead.
+    var accountExists = false
+
+    init(signup: SignupStarted) {
+        self.signup = signup
+    }
+
+    var isEnded: Bool { endedMessage != nil }
+    var canSubmit: Bool { code.count == 6 && !isSubmitting && !isEnded && !accountExists }
+
+    /// Digits only, at most six: pasted or autofilled codes can carry spaces.
+    static func sanitized(_ input: String) -> String {
+        String(input.filter(\.isNumber).prefix(6))
+    }
+
+    /// Creates the account and signs in. Returns true when the app should continue as after any new sign-up.
+    func submit(model: AppModel) async -> Bool {
+        guard canSubmit else { return false }
+        isSubmitting = true
+        defer { isSubmitting = false }
+        notice = nil
+        do {
+            try await model.completeSignup(signup, code: code)
+            errorMessage = nil
+            return true
+        } catch let error as APIError where error.code == "signup_expired" {
+            errorMessage = nil
+            endedMessage = error.localizedDescription
+        } catch let error as APIError where error.code == "conflict" {
+            errorMessage = error.localizedDescription
+            accountExists = true
+        } catch {
+            // wrong_code included: the message says so, and they can try again
+            errorMessage = error.localizedDescription
+        }
+        return false
+    }
+
+    /// "Send a new code". The previous code stops working.
+    func resend(model: AppModel) async {
+        guard !isResending, !isEnded else { return }
+        isResending = true
+        defer { isResending = false }
+        do {
+            let sent = try await model.api.resendSignupCode(signup: signup.signup)
+            signup.email = sent.email
+            signup.expiresAt = sent.expiresAt
+            code = ""
+            errorMessage = nil
+            notice = "We sent a new code to \(sent.email). Earlier codes no longer work."
+        } catch let error as APIError where error.code == "signup_expired" {
+            errorMessage = nil
+            notice = nil
+            endedMessage = error.localizedDescription
+        } catch {
+            notice = nil
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+struct SignupCodeView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(AppRouter.self) private var router
+    @State private var viewModel: SignupCodeViewModel
+
+    init(signup: SignupStarted) {
+        _viewModel = State(initialValue: SignupCodeViewModel(signup: signup))
+    }
+
+    var body: some View {
+        @Bindable var viewModel = viewModel
+
+        EGuardScreen {
+            AccountStepProgress(fraction: 0.2)
+
+            ScreenHeader(
+                title: "Check your email",
+                subtitle: "We sent a 6-digit code to \(viewModel.signup.email). Enter it to finish creating your account."
+            )
+
+            EGuardTextField(
+                label: "Code",
+                placeholder: "123456",
+                text: $viewModel.code,
+                symbolName: "envelope.badge",
+                contentType: .oneTimeCode,
+                keyboard: .numberPad,
+                identifier: "signupCode.code"
+            )
+            .onChange(of: viewModel.code) { _, newValue in
+                let digits = SignupCodeViewModel.sanitized(newValue)
+                if digits != newValue { viewModel.code = digits }
+            }
+
+            if let notice = viewModel.notice {
+                EGuardCard {
+                    Label(notice, systemImage: "envelope.badge.fill")
+                        .font(EGuardTypography.callout)
+                        .foregroundStyle(EGuardColors.success)
+                }
+                .accessibilityIdentifier("signupCode.sent")
+            }
+
+            InlineError(message: viewModel.errorMessage)
+
+            if let ended = viewModel.endedMessage {
+                // Back to the form, which still holds what they typed
+                ErrorCard(message: ended) { router.pop() }
+            }
+
+            if viewModel.accountExists {
+                Button("Sign in instead") {
+                    router.popToRoot()
+                    router.push(.signIn)
+                }
+                .buttonStyle(.eGuardSecondary)
+                .accessibilityIdentifier("signupCode.signIn")
+            }
+
+            Button(viewModel.isResending ? "Sending…" : "Send a new code") {
+                Task { await viewModel.resend(model: model) }
+            }
+            .buttonStyle(.eGuardText)
+            .frame(maxWidth: .infinity)
+            .disabled(viewModel.isResending || viewModel.isEnded || viewModel.accountExists)
+            .accessibilityIdentifier("signupCode.resend")
+        } actions: {
+            Button(viewModel.isSubmitting ? "Creating account…" : "Create account") {
+                Task {
+                    if await viewModel.submit(model: model) {
+                        router.push(.addChild)
+                    }
+                }
+            }
+            .buttonStyle(.eGuardPrimary)
+            .disabled(!viewModel.canSubmit)
+            .accessibilityIdentifier("signupCode.submit")
+
+            Button("Wrong email? Start again") { router.pop() }
+                .buttonStyle(.eGuardText)
+                .disabled(viewModel.isSubmitting)
+                .accessibilityIdentifier("signupCode.startAgain")
+        }
+        .brandNavigationTitle()
     }
 }
 
@@ -258,6 +420,14 @@ struct CheckboxToggleStyle: ToggleStyle {
 #Preview {
     NavigationStack {
         CreateAccountView()
+    }
+    .environment(AppModel.mock())
+    .environment(AppRouter())
+}
+
+#Preview("Check your email") {
+    NavigationStack {
+        SignupCodeView(signup: SignupStarted(verificationRequired: true, signup: "preview-ticket", email: "randy@example.com", expiresAt: .now.addingTimeInterval(900)))
     }
     .environment(AppModel.mock())
     .environment(AppRouter())

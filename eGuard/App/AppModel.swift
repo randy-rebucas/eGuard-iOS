@@ -175,7 +175,8 @@ final class AppModel {
         // Before any store reads the Keychain: a reinstall must not open signed in to the previous account.
         FreshInstallReset.run(secureStore: KeychainStore(), hasExistingData: FreshInstallReset.hasAppFiles())
         let sessionStore = SessionStore.live()
-        let client = APIClient(sessionStore: sessionStore)
+        // After the reset too: a reinstall gets a new install id
+        let client = APIClient(sessionStore: sessionStore, installID: InstallID.load(secureStore: KeychainStore()))
         let authorization = FamilyControlsAuthorizationService()
         let restrictions = ManagedSettingsRestrictionService()
         let schedules = DeviceActivityScheduleService()
@@ -386,8 +387,15 @@ final class AppModel {
 
     // MARK: Account
 
-    func register(name: String, email: String, password: String) async throws {
-        let response = try await api.register(name: name, email: email, password: password, familyName: nil)
+    /// Create Account, step 1: emails a 6-digit code. No account or session yet; the returned ticket stays in memory
+    /// for `completeSignup`. The answer is the same whether or not the email already has an account.
+    func register(name: String, email: String, password: String) async throws -> SignupStarted {
+        try await api.register(name: name, email: email, password: password, familyName: nil)
+    }
+
+    /// Create Account, step 2: the code from the email creates the account and signs in, like a successful sign-in.
+    func completeSignup(_ signup: SignupStarted, code: String) async throws {
+        let response = try await api.verifySignup(signup: signup.signup, code: code)
         try await startSession(response)
     }
 

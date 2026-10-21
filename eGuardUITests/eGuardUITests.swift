@@ -62,6 +62,13 @@ final class OnboardingUITests: XCTestCase {
         tapScrolling(element("account.guardian", in: app), in: app)
         tapScrolling(app.buttons["account.create"], in: app)
         dismissSavePasswordPromptIfNeeded(in: app, timeout: 4)
+        // Check your email: the mock server's code (POST /auth/register/verify)
+        let code = app.textFields["signupCode.code"]
+        waitFor(code)
+        // A number pad has no Return key, so no "\n" here; the button sits in the pinned bar above the keyboard
+        code.tap()
+        code.typeText("246810")
+        app.buttons["signupCode.submit"].tap()
         waitFor(app.textFields["child.nameField"])
     }
 
@@ -74,7 +81,7 @@ final class OnboardingUITests: XCTestCase {
         waitFor(app.buttons["welcome.signIn"])
         app.buttons["welcome.getStarted"].tap()
 
-        // 03 Create Account (POST /auth/register)
+        // 03 Create Account (POST /auth/register, then the emailed code)
         createAccount(in: app)
 
         // 04 Add Child (POST /children)
@@ -117,7 +124,7 @@ final class OnboardingUITests: XCTestCase {
 
     @MainActor
     func testPairingAndGuidedSetupVerifyThroughABatch() throws {
-        // A brand-new sign-up is unverified and can't pair, so sign in as the verified parent instead.
+        // Signs in as the mock server's verified parent rather than going through Create Account again.
         let app = launch()
         app.buttons["welcome.signIn"].tap()
         type("randy@example.com", into: app.textFields["signIn.email"], in: app)

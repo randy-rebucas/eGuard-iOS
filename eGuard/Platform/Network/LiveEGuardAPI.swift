@@ -36,12 +36,22 @@ final class LiveEGuardAPI: EGuardAPIService {
 
     // MARK: Auth
 
-    func register(name: String, email: String, password: String, familyName: String?) async throws -> AuthResponse {
+    func register(name: String, email: String, password: String, familyName: String?) async throws -> SignupStarted {
         struct Body: Encodable { let name: String; let email: String; let password: String; let familyName: String?; let guardian: Bool }
         return try await client.send(
             .json(.post, "auth/register", body: Body(name: name, email: email, password: password, familyName: familyName, guardian: true), requiresAuth: false),
-            as: AuthResponse.self
+            as: SignupStarted.self
         )
+    }
+
+    func verifySignup(signup: String, code: String) async throws -> AuthResponse {
+        struct Body: Encodable { let signup: String; let code: String }
+        return try await client.send(.json(.post, "auth/register/verify", body: Body(signup: signup, code: code), requiresAuth: false), as: AuthResponse.self)
+    }
+
+    func resendSignupCode(signup: String) async throws -> SignupCodeSent {
+        struct Body: Encodable { let signup: String }
+        return try await client.send(.json(.post, "auth/register/resend", body: Body(signup: signup), requiresAuth: false), as: SignupCodeSent.self)
     }
 
     func login(email: String, password: String) async throws -> LoginResult {

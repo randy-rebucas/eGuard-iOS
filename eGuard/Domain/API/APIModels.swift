@@ -122,6 +122,22 @@ nonisolated struct TwoFactorChallenge: Codable, Hashable, Sendable {
     var isNew: Bool?
 }
 
+/// `POST /auth/register` (202): the code is on its way, and no account exists yet. `signup` is the ticket that goes
+/// with the code; it lives only in memory (15 minutes). The answer is the same whether or not the email has an account.
+nonisolated struct SignupStarted: Codable, Hashable, Sendable {
+    var verificationRequired: Bool?
+    var signup: String
+    var email: String
+    var expiresAt: Date
+}
+
+/// `POST /auth/register/resend`: a new code was emailed and the previous one stopped working.
+nonisolated struct SignupCodeSent: Codable, Equatable, Sendable {
+    var ok: Bool?
+    var email: String
+    var expiresAt: Date
+}
+
 /// The two shapes a sign-in call can answer with.
 nonisolated enum LoginResult: Decodable, Equatable, Sendable {
     case signedIn(AuthResponse)

@@ -29,8 +29,69 @@ struct APIClientTests {
         configuration.protocolClasses = [StubURLProtocol.self]
         let store = SessionStore.inMemory()
         if signedIn { store.save(APISession(token: "abc123", expiresAt: Date.now.addingTimeInterval(3600))) }
-        let client = APIClient(baseURL: URL(string: "https://example.test/api/mobile/v1")!, sessionStore: store, urlSession: URLSession(configuration: configuration))
+        let client = APIClient(baseURL: URL(string: "https://example.test/api/mobile/v1")!, sessionStore: store, installID: "install-0123456789", urlSession: URLSession(configuration: configuration))
         return (client, store)
+    }
+
+    private func body(of request: URLRequest) throws -> [String: Any] {
+        // URLProtocol sees the body as a stream
+        var data = request.httpBody ?? Data()
+        if data.isEmpty, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let read = stream.read(&buffer, maxLength: buffer.count)
+                if read <= 0 { break }
+                data.append(buffer, count: read)
+            }
+        }
+        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    @Test func createAccountTakesTwoStepsAndSendsTheInstallID() async throws {
+        let (client, _) = makeClient(signedIn: false)
+        let api = LiveEGuardAPI(client: client)
+
+        // Step 1: 202, a ticket and no token
+        StubURLProtocol.handler = { _ in (202, Data(#"{"verificationRequired":true,"signup":"sgn_0123456789abcdefghij","email":"new@example.com","expiresAt":"2026-10-15T12:30:00.000Z"}"#.utf8)) }
+        let signup = try await api.register(name: "Randy Cruz", email: "New@Example.com", password: "ChangeMe123!", familyName: nil)
+        var request = try #require(StubURLProtocol.lastRequest)
+        #expect(request.url?.path == "/api/mobile/v1/auth/register")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(request.value(forHTTPHeaderField: "X-eGuard-Install") == "install-0123456789")
+        #expect(try body(of: request)["guardian"] as? Bool == true)
+        #expect(signup.signup == "sgn_0123456789abcdefghij")
+        #expect(signup.email == "new@example.com")
+        #expect(signup.verificationRequired == true)
+
+        // Step 2: 201 with a session, like sign-in
+        StubURLProtocol.handler = { _ in
+            (201, Data(#"{"token":"tok","expiresAt":"2026-11-14T12:00:00.000Z","user":{"id":"u1","name":"Randy Cruz","firstName":"Randy","email":"new@example.com","role":"FAMILY_ADMIN","family":{"id":"f1","name":"Cruz Family","timezone":"Asia/Manila"},"notifications":{"notifyPush":true,"notifyEmail":true,"notifyApproval":true,"weeklySummary":true},"twoFactor":false,"hasPassword":true,"emailVerified":true,"createdAt":"2026-10-15T12:15:00.000Z"}}"#.utf8))
+        }
+        let session = try await api.verifySignup(signup: signup.signup, code: "246810")
+        request = try #require(StubURLProtocol.lastRequest)
+        #expect(request.url?.path == "/api/mobile/v1/auth/register/verify")
+        #expect(request.value(forHTTPHeaderField: "X-eGuard-Install") == "install-0123456789")
+        let sent = try body(of: request)
+        #expect(sent["signup"] as? String == signup.signup)
+        #expect(sent["code"] as? String == "246810")
+        #expect(session.token == "tok")
+        #expect(session.user.isEmailVerified)
+
+        // Send a new code
+        StubURLProtocol.handler = { _ in (200, Data(#"{"ok":true,"email":"new@example.com","expiresAt":"2026-10-15T12:45:00.000Z"}"#.utf8)) }
+        let resent = try await api.resendSignupCode(signup: signup.signup)
+        request = try #require(StubURLProtocol.lastRequest)
+        #expect(request.url?.path == "/api/mobile/v1/auth/register/resend")
+        #expect(try body(of: request)["signup"] as? String == signup.signup)
+        #expect(resent.expiresAt > signup.expiresAt)
+
+        // The code step's errors keep their codes
+        StubURLProtocol.handler = { _ in (400, Data(#"{"error":"This sign-up has expired. Fill in the form again to get a new code.","code":"signup_expired"}"#.utf8)) }
+        await #expect(throws: APIError.server(status: 400, code: "signup_expired", message: "This sign-up has expired. Fill in the form again to get a new code.")) {
+            _ = try await api.verifySignup(signup: signup.signup, code: "000000")
+        }
     }
 
     @Test func sendsBearerAndClientHeaders() async throws {
@@ -41,6 +102,7 @@ struct APIClientTests {
         let request = try #require(StubURLProtocol.lastRequest)
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer abc123")
         #expect(request.value(forHTTPHeaderField: "X-eGuard-Client") == "ios")
+        #expect(request.value(forHTTPHeaderField: "X-eGuard-Install") == "install-0123456789")
         #expect(request.value(forHTTPHeaderField: "User-Agent")?.hasPrefix("eGuard/") == true)
         #expect(request.url?.path == "/api/mobile/v1/alerts/unread-count")
     }
@@ -261,6 +323,44 @@ struct FreshInstallResetTests {
         #expect(!FreshInstallReset.run(defaults: defaults, secureStore: store))
         #expect(!store.removed)
         #expect(!defaults.bool(forKey: FreshInstallReset.flagKey))
+    }
+}
+
+/// `X-eGuard-Install`: one id per install, kept in the Keychain, new after a reinstall.
+@Suite("Install id")
+struct InstallIDTests {
+    private func makeDefaults() -> UserDefaults {
+        let name = "InstallIDTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        return defaults
+    }
+
+    @Test func theIdIsMadeOnceAndKept() throws {
+        let defaults = makeDefaults()
+        let store = InMemoryStore()
+        let id = InstallID.load(defaults: defaults, secureStore: store)
+        #expect(InstallID.isValid(id))
+        #expect(InstallID.load(defaults: defaults, secureStore: store) == id)
+        #expect(try store.load(String.self, forKey: InstallID.storeKey) == id)
+    }
+
+    @Test func aReinstallGetsANewIdThoughTheKeychainKeptTheOldOne() throws {
+        let store = InMemoryStore()
+        let old = InstallID.load(defaults: makeDefaults(), secureStore: store)
+        // UserDefaults goes with the app; the Keychain item doesn't
+        let id = InstallID.load(defaults: makeDefaults(), secureStore: store)
+        #expect(id != old)
+        #expect(try store.load(String.self, forKey: InstallID.storeKey) == id)
+    }
+
+    @Test func onlyWhatTheServerAcceptsIsValid() {
+        #expect(InstallID.isValid(UUID().uuidString))
+        #expect(InstallID.isValid("abc_DEF-12"))
+        #expect(!InstallID.isValid("short"))
+        #expect(!InstallID.isValid(String(repeating: "a", count: 65)))
+        #expect(!InstallID.isValid("has space1"))
+        #expect(!InstallID.isValid("ünicode-id"))
     }
 }
 

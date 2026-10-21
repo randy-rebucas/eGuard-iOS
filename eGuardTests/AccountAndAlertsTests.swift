@@ -2,6 +2,14 @@ import Foundation
 import Testing
 @testable import eGuard
 
+extension AppModel {
+    /// Both Create Account steps, with the code the mock server emails.
+    func registerForTests(name: String, email: String, password: String) async throws {
+        let signup = try await register(name: name, email: email, password: password)
+        try await completeSignup(signup, code: MockEGuardAPI.signupCode)
+    }
+}
+
 @Suite("Accounts and sessions")
 struct AccountTests {
     @Test func validationMirrorsTheAPIRules() {
@@ -13,23 +21,136 @@ struct AccountTests {
         #expect(AccountValidator.validatePassword("long-enough") == nil)
     }
 
-    @Test func registerSignsInAndStartsAnEmptyFamily() async throws {
+    @Test func registerEmailsACodeAndTheCodeSignsIn() async throws {
         let model = AppModel.mock()
         #expect(!model.isSignedIn)
-        try await model.register(name: "Randy Cruz", email: "New@Example.com", password: "ChangeMe123!")
+        let signup = try await model.register(name: "Randy Cruz", email: "New@Example.com", password: "ChangeMe123!")
+        // Step 1 makes no account and no session
+        #expect(!model.isSignedIn)
+        #expect(signup.email == "new@example.com")
+        #expect(signup.expiresAt > .now)
+
+        try await model.completeSignup(signup, code: MockEGuardAPI.signupCode)
         #expect(model.isSignedIn)
+        #expect(model.mode == .parent)
         #expect(model.user?.email == "new@example.com")
         #expect(model.user?.isAdmin == true)
-        #expect(model.user?.isEmailVerified == false)
+        // The code proved the mailbox
+        #expect(model.user?.isEmailVerified == true)
         #expect(model.hasChildren == false)
         #expect(!model.isSetupComplete)
     }
 
-    @Test func duplicateEmailIsAConflict() async {
+    @Test func anEmailWithAnAccountGetsTheSameAnswerButNoCodeWorks() async throws {
         let model = AppModel.mock()
-        await #expect(throws: APIError.self) {
-            try await model.register(name: "Randy Cruz", email: "randy@example.com", password: "ChangeMe123!")
+        // No 409 on the form: the answer can't tell who uses eGuard
+        let signup = try await model.register(name: "Randy Cruz", email: "randy@example.com", password: "ChangeMe123!")
+        #expect(signup.email == "randy@example.com")
+        do {
+            try await model.completeSignup(signup, code: MockEGuardAPI.signupCode)
+            Issue.record("No code finishes a sign-up for an email with an account")
+        } catch let error as APIError {
+            #expect(error.code == "wrong_code")
         }
+        #expect(!model.isSignedIn)
+    }
+
+    @Test func aBreachedPasswordIsRefusedOnTheForm() async {
+        let model = AppModel.mock()
+        let form = CreateAccountViewModel()
+        form.fullName = "Randy Cruz"
+        form.email = "new@example.com"
+        form.password = "password1234"
+        form.isGuardian = true
+        #expect(await form.submit(model: model) == nil)
+        #expect(form.errorMessage?.contains("data breach") == true)
+        #expect(!model.isSignedIn)
+    }
+
+    @Test func aWrongCodeCanBeRetriedAndTheSixthTryEndsTheSignup() async throws {
+        let model = AppModel.mock()
+        let signup = try await model.register(name: "Randy Cruz", email: "tries@example.com", password: "ChangeMe123!")
+        let screen = SignupCodeViewModel(signup: signup)
+        screen.code = "000000"
+        #expect(await screen.submit(model: model) == false)
+        #expect(screen.errorMessage?.isEmpty == false)
+        #expect(!screen.isEnded)
+
+        // The right code after a wrong one still works
+        screen.code = MockEGuardAPI.signupCode
+        #expect(await screen.submit(model: model))
+        #expect(model.isSignedIn)
+
+        let other = AppModel.mock()
+        let second = try await other.register(name: "Ana Cruz", email: "ana-tries@example.com", password: "ChangeMe123!")
+        let ended = SignupCodeViewModel(signup: second)
+        for _ in 0..<5 {
+            ended.code = "000000"
+            #expect(await ended.submit(model: other) == false)
+        }
+        #expect(!ended.isEnded)
+        ended.code = MockEGuardAPI.signupCode
+        #expect(await ended.submit(model: other) == false)
+        #expect(ended.isEnded)
+        #expect(!ended.canSubmit)
+        #expect(!other.isSignedIn)
+    }
+
+    @Test func anExpiredSignupSendsTheParentBackToTheForm() async throws {
+        let api = MockEGuardAPI.empty()
+        let model = AppModel.mock(api: api)
+        let signup = try await model.register(name: "Randy Cruz", email: "late@example.com", password: "ChangeMe123!")
+        api.expireSignup(signup.signup)
+        let screen = SignupCodeViewModel(signup: signup)
+        screen.code = MockEGuardAPI.signupCode
+        #expect(await screen.submit(model: model) == false)
+        #expect(screen.endedMessage == MockEGuardAPI.signupExpiredMessage)
+        #expect(screen.errorMessage == nil)
+        #expect(!model.isSignedIn)
+        // Nor can a new code be sent for it
+        await screen.resend(model: model)
+        #expect(screen.notice == nil)
+    }
+
+    @Test func sendingANewCodeKeepsTheSignupGoingUpToFiveEmails() async throws {
+        let model = AppModel.mock()
+        let signup = try await model.register(name: "Randy Cruz", email: "resend@example.com", password: "ChangeMe123!")
+        let screen = SignupCodeViewModel(signup: signup)
+        screen.code = "123"
+        await screen.resend(model: model)
+        #expect(screen.notice?.contains("resend@example.com") == true)
+        #expect(screen.code.isEmpty)
+        #expect(screen.errorMessage == nil)
+        for _ in 0..<3 { await screen.resend(model: model) }
+        // The sixth email (the first plus five resends) is refused
+        await screen.resend(model: model)
+        #expect(screen.errorMessage?.isEmpty == false)
+        #expect(screen.notice == nil)
+        #expect(!screen.isEnded)
+
+        screen.code = MockEGuardAPI.signupCode
+        #expect(await screen.submit(model: model))
+        #expect(model.user?.email == "resend@example.com")
+    }
+
+    @Test func anEmailTakenBetweenTheStepsSuggestsSigningIn() async throws {
+        let api = MockEGuardAPI.empty()
+        let model = AppModel.mock(api: api)
+        let signup = try await model.register(name: "Randy Cruz", email: "race@example.com", password: "ChangeMe123!")
+        let screen = SignupCodeViewModel(signup: signup)
+        screen.code = MockEGuardAPI.signupCode
+        api.nextError = APIError.server(status: 409, code: "conflict", message: "An account with this email already exists. Sign in instead.")
+        #expect(await screen.submit(model: model) == false)
+        #expect(screen.accountExists)
+        #expect(screen.errorMessage == "An account with this email already exists. Sign in instead.")
+        #expect(!screen.canSubmit)
+        #expect(!model.isSignedIn)
+    }
+
+    @Test func pastedCodesKeepSixDigits() {
+        #expect(SignupCodeViewModel.sanitized("123 456") == "123456")
+        #expect(SignupCodeViewModel.sanitized("1234567") == "123456")
+        #expect(SignupCodeViewModel.sanitized("12a3") == "123")
     }
 
     @Test func loginChecksCredentialsAndLoadsTheDashboard() async throws {
@@ -494,7 +615,7 @@ struct ProtectionEditorTests {
     @Test func savingForAChildWithoutADeviceIsSavedNotAnError() async throws {
         let api = MockEGuardAPI.empty()
         let model = AppModel.mock(api: api)
-        try await model.register(name: "Randy Cruz", email: "editor@example.com", password: "ChangeMe123!")
+        try await model.registerForTests(name: "Randy Cruz", email: "editor@example.com", password: "ChangeMe123!")
         let child = try await api.createChild(name: "Mia", age: 12, profile: nil)
 
         let editor = ProtectionEditorViewModel(childId: child.id, key: "BEDTIME")
@@ -541,7 +662,7 @@ struct OnboardingFlowTests {
     @Test func childCanBeCreatedConfiguredAndVerified() async throws {
         let api = MockEGuardAPI.empty()
         let model = AppModel.mock(api: api)
-        try await model.register(name: "Randy Cruz", email: "flow@example.com", password: "ChangeMe123!")
+        try await model.registerForTests(name: "Randy Cruz", email: "flow@example.com", password: "ChangeMe123!")
 
         let child = try await api.createChild(name: "Mia", age: 12, profile: nil)
         #expect(child.status == .notconfigured)

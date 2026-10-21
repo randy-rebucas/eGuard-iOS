@@ -18,6 +18,22 @@ final class MockEGuardAPI: EGuardAPIService {
 
     /// The code the mock's authenticator "shows". Tests use it to pass two-step verification.
     static let authenticatorCode = "123456"
+    /// The 6-digit code the mock "emails" for every sign-up. Tests type it to finish creating an account.
+    static let signupCode = "246810"
+    static let signupExpiredMessage = "This sign-up has expired. Fill in the form again to get a new code."
+    /// Passwords the mock treats as published in a data breach (`400` on the form, as the server does).
+    static let breachedPasswords: Set<String> = ["password1234", "Password123!"]
+    /// A sign-up waiting for its code. `hasAccount`: the email already had an account, so no code finishes it.
+    private struct PendingSignup {
+        var name: String
+        var email: String
+        var password: String
+        var familyName: String?
+        var expiresAt: Date
+        var hasAccount: Bool
+        var attempts = 0
+        var sends = 1
+    }
     /// One-time tokens the mock "emails": password resets, email verification, invitations.
     private enum LinkKind { case reset(email: String), verify(email: String), invite(memberId: String) }
 
@@ -39,6 +55,7 @@ final class MockEGuardAPI: EGuardAPIService {
     private var pushTokens: Set<String> = []
     private var challenges: [String: String] = [:]
     private var links: [String: LinkKind] = [:]
+    private var signups: [String: PendingSignup] = [:]
     private var browsersList: [ConnectedBrowser] = []
     private var browserRequests: [BrowserAccessRequest] = []
     private var browserPolicies: [String: BrowserPolicy] = [:]
@@ -53,6 +70,11 @@ final class MockEGuardAPI: EGuardAPIService {
     var entitlements = PlanEntitlements(childLimit: 5, deviceLimit: 10, locationSharing: true, appMonitoringLimit: nil, realtimeAlerts: true, advancedReports: false, apiAccess: false)
     /// The last one-time link the mock "emailed", so tests can open it.
     private(set) var lastLinkToken: String?
+
+    /// Ends a pending sign-up as if its 15 minutes were up.
+    func expireSignup(_ ticket: String) {
+        signups[ticket]?.expiresAt = .distantPast
+    }
 
     /// Overrides for tests.
     var appInfoValue = AppInfo(
@@ -505,22 +527,69 @@ final class MockEGuardAPI: EGuardAPIService {
         if currentUser?.id == account.user.id { currentUser = account.user }
     }
 
-    func register(name: String, email: String, password: String, familyName: String?) async throws -> AuthResponse {
+    func register(name: String, email: String, password: String, familyName: String?) async throws -> SignupStarted {
         try gate()
-        let normalized = AccountValidator.normalizedEmail(email)
-        if accounts[normalized] != nil {
-            throw APIError.server(status: 409, code: "conflict", message: "That email already has an eGuard account. Sign in instead.")
+        guard password.count >= 10 else { throw APIError.server(status: 400, code: "invalid", message: "password: Use at least 10 characters.") }
+        if Self.breachedPasswords.contains(password) {
+            throw APIError.server(status: 400, code: "invalid", message: "This password has appeared in a data breach, so it's one of the first that attackers try. Choose a different one.")
         }
+        let normalized = AccountValidator.normalizedEmail(email)
+        // The same answer for an email that already has an account, but no code finishes that sign-up
+        let ticket = nextID("signup")
+        let expiresAt = Date.now.addingTimeInterval(15 * 60)
+        signups[ticket] = PendingSignup(name: name, email: normalized, password: password, familyName: familyName, expiresAt: expiresAt, hasAccount: accounts[normalized] != nil)
+        return SignupStarted(verificationRequired: true, signup: ticket, email: normalized, expiresAt: expiresAt)
+    }
+
+    func verifySignup(signup: String, code: String) async throws -> AuthResponse {
+        try gate()
+        guard var pending = signups[signup], pending.expiresAt > .now else {
+            throw APIError.server(status: 400, code: "signup_expired", message: Self.signupExpiredMessage)
+        }
+        // Counted before checking, as the server does: the sixth try ends the sign-up
+        guard pending.attempts < 5 else {
+            signups[signup] = nil
+            throw APIError.server(status: 400, code: "signup_expired", message: "Too many wrong codes. Fill in the form again to get a new one.")
+        }
+        pending.attempts += 1
+        signups[signup] = pending
+        guard !pending.hasAccount, code.filter(\.isNumber) == Self.signupCode else {
+            throw APIError.server(status: 400, code: "wrong_code", message: "That code isn't right. Check the newest email from eGuard and try again.")
+        }
+        signups = signups.filter { $0.value.email != pending.email }
+        if accounts[pending.email] != nil {
+            throw APIError.server(status: 409, code: "conflict", message: "An account with this email already exists. Sign in instead.")
+        }
+        return createAccount(name: pending.name, email: pending.email, password: pending.password, familyName: pending.familyName)
+    }
+
+    func resendSignupCode(signup: String) async throws -> SignupCodeSent {
+        try gate()
+        guard var pending = signups[signup], pending.expiresAt > .now else {
+            throw APIError.server(status: 400, code: "signup_expired", message: Self.signupExpiredMessage)
+        }
+        guard pending.sends < 5 else {
+            throw APIError.server(status: 429, code: "rate_limited", message: "That's the most codes we can send for one sign-up. Fill in the form again.")
+        }
+        pending.sends += 1
+        pending.attempts = 0
+        pending.expiresAt = Date.now.addingTimeInterval(15 * 60)
+        signups[signup] = pending
+        return SignupCodeSent(ok: true, email: pending.email, expiresAt: pending.expiresAt)
+    }
+
+    /// A new family with this parent as its admin, signed in. Shared by the code step and Apple sign-up, which both
+    /// prove the mailbox, so the email starts verified.
+    private func createAccount(name: String, email normalized: String, password: String?, familyName: String?) -> AuthResponse {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let first = trimmed.split(separator: " ").first.map(String.init) ?? trimmed
         let user = APIUser(
             id: nextID("usr"), name: trimmed, firstName: first, email: normalized, role: .familyAdmin,
             family: FamilyRef(id: nextID("fam"), name: familyName ?? "\(first)'s Family", timezone: TimeZone.current.identifier),
             notifications: NotificationPrefs(notifyPush: true, notifyEmail: true, notifyApproval: true, weeklySummary: false),
-            twoFactor: false, hasPassword: true, emailVerified: false, createdAt: .now
+            twoFactor: false, hasPassword: password != nil, emailVerified: true, createdAt: .now
         )
         accounts[normalized] = Account(user: user, password: password)
-        _ = issueLink(.verify(email: normalized))
         currentUser = user
         members = [FamilyMember(id: user.id, name: user.name, email: user.email, role: .familyAdmin, createdAt: .now, you: true, pending: false)]
         summaries = []
@@ -556,12 +625,9 @@ final class MockEGuardAPI: EGuardAPIService {
             return finishSignIn(account, isNew: false)
         }
         guard guardian else { throw APIError.server(status: 400, code: "guardian_required", message: "Confirm you're a parent or legal guardian, 18 or older.") }
-        let response = try await register(name: name?.isEmpty == false ? name! : "Parent", email: email, password: UUID().uuidString, familyName: nil)
         // Social accounts have no password and count as verified.
+        let response = createAccount(name: name?.isEmpty == false ? name! : "Parent", email: email, password: nil, familyName: nil)
         guard var account = accounts[email] else { throw APIError.notSignedIn }
-        account.password = nil
-        account.user.hasPassword = false
-        account.user.emailVerified = true
         account.identities = [LinkedIdentity(id: nextID("identity"), provider: provider.rawValue, email: email, createdAt: .now)]
         saveAccount(account)
         return .signedIn(AuthResponse(token: response.token, expiresAt: response.expiresAt, user: account.user, isNew: true))
