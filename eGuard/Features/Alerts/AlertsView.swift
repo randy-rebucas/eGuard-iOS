@@ -12,6 +12,9 @@ struct AlertsView: View {
     @State private var nextBefore: Date?
     @State private var isLoading = true
     @State private var error: String?
+    /// A failed action (load more, mark read, dismiss): shown above the list, which stays.
+    @State private var actionError: String?
+    @State private var isLoadingMore = false
 
     private var groups: [(DayGroup, [APIAlert])] {
         var order: [DayGroup] = []
@@ -54,8 +57,12 @@ struct AlertsView: View {
         Menu {
             Button("Mark all as read", systemImage: "envelope.open") {
                 Task {
-                    _ = try? await model.api.markAllAlertsRead()
-                    model.setUnreadAlerts(0)
+                    do {
+                        model.setUnreadAlerts(try await model.api.markAllAlertsRead())
+                        actionError = nil
+                    } catch {
+                        actionError = error.localizedDescription
+                    }
                     await loadAlerts(reset: true)
                 }
             }
@@ -70,9 +77,11 @@ struct AlertsView: View {
     private var content: some View {
         PillSegmentedControl(options: AlertsFilter.allCases, selection: $filter) { $0.title }
 
+        InlineError(message: actionError)
+
         if isLoading {
             LoadingCard()
-        } else if let error {
+        } else if let error, alerts.isEmpty {
             ErrorCard(message: error) { Task { await loadAlerts(reset: true) } }
         } else if alerts.isEmpty {
             EmptyStateView(
@@ -93,8 +102,9 @@ struct AlertsView: View {
                 }
             }
             if nextBefore != nil {
-                Button("Load more") { Task { await loadAlerts(reset: false) } }
+                Button(isLoadingMore ? "Loading…" : "Load more") { Task { await loadAlerts(reset: false) } }
                     .buttonStyle(.eGuardSecondary)
+                    .disabled(isLoadingMore)
             }
         }
     }
@@ -127,7 +137,13 @@ struct AlertsView: View {
                 if alert.dismissible {
                     Button("Dismiss") {
                         Task {
-                            try? await model.api.dismissAlert(id: alert.id)
+                            do {
+                                try await model.api.dismissAlert(id: alert.id)
+                                actionError = nil
+                            } catch {
+                                // e.g. a critical alert that stays until it's resolved
+                                actionError = error.localizedDescription
+                            }
                             await loadAlerts(reset: true)
                         }
                     }
@@ -151,20 +167,33 @@ struct AlertsView: View {
     }
 
     private func loadAlerts(reset: Bool) async {
+        if !reset {
+            // A second tap while a page loads would append it twice
+            guard !isLoadingMore else { return }
+            isLoadingMore = true
+        }
+        defer { isLoadingMore = false }
         if reset { isLoading = alerts.isEmpty }
         do {
             let page = try await model.api.alerts(filter: filter, childId: nil, includeResolved: includeResolved, before: reset ? nil : nextBefore)
-            alerts = reset ? page.alerts : alerts + page.alerts
+            if reset {
+                alerts = page.alerts
+            } else {
+                let known = Set(alerts.map(\.id))
+                alerts += page.alerts.filter { !known.contains($0.id) }
+            }
             nextBefore = page.nextBefore
             model.setUnreadAlerts(page.unread)
             error = nil
         } catch {
-            self.error = error.localizedDescription
+            // Nothing shown yet: the error card with Retry. Otherwise keep the list and say what failed
+            if reset && alerts.isEmpty { self.error = error.localizedDescription } else { actionError = error.localizedDescription }
         }
         isLoading = false
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         AlertsView(isRoot: true)
@@ -172,3 +201,4 @@ struct AlertsView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

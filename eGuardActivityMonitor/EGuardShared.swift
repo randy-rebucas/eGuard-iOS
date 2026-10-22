@@ -26,6 +26,16 @@ enum EGuardShared {
         static func isDowntime(_ name: DeviceActivityName) -> Bool {
             name.rawValue.hasPrefix(downtime.rawValue)
         }
+
+        /// When weekdays and weekends have different limits: one weekly schedule per day (Sunday = 1), each
+        /// with that day's limit, so the right one applies without the app being opened.
+        static func screenTime(weekday: Int) -> DeviceActivityName {
+            DeviceActivityName("eguard.screenTime.\(weekday)")
+        }
+
+        static func isScreenTime(_ name: DeviceActivityName) -> Bool {
+            name.rawValue.hasPrefix(screenTime.rawValue)
+        }
     }
 
     enum Event {
@@ -55,6 +65,15 @@ enum EGuardShared {
         /// The local `YYYY-MM-DD` and minutes of the last usage rung the monitor extension reached.
         static let usageDate = "eguard.usage.date"
         static let usageMinutes = "eguard.usage.minutes"
+        /// JSON `{ "YYYY-MM-DD": minutes }` for the last 30 days, so days the app wasn't opened still reach the parent.
+        static let usageByDate = "eguard.usage.byDate"
+        /// The local `YYYY-MM-DD` on which a limit shield went up. A schedule re-registered that day (the app
+        /// re-applying the policy) keeps the shield instead of lifting it.
+        static let shieldedOn = "eguard.limits.shieldedOn"
+        /// What the screen-time schedules were last registered with, to skip re-registering when nothing changed.
+        static let screenTimeSignature = "eguard.screenTime.signature"
+        /// The protections (APP_APPROVAL, DOWNLOADS) that last asked for App Store installs to be denied.
+        static let installApprovalReasons = "eguard.installApproval.reasons"
     }
 
     static var sharedDefaults: UserDefaults? {

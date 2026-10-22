@@ -25,7 +25,15 @@ final class AppsManagementViewModel {
         categoryLimits = try? await api.categoryLimits(childId: childId)
     }
 
+    /// Apps and website requests with an answer on its way: their buttons ignore taps until it lands.
+    private(set) var busyIds: Set<String> = []
+
+    func isBusy(_ id: String) -> Bool { busyIds.contains(id) }
+
     func setAllowed(_ allowed: Bool, app: ChildApp, childId: String, api: EGuardAPIService) async {
+        // A second tap on Approve or Decline would send the answer twice
+        guard busyIds.insert(app.id).inserted else { return }
+        defer { busyIds.remove(app.id) }
         do {
             _ = try await api.updateApp(id: app.id, patch: AppPatch(approval: allowed ? .allowed : .blocked))
             await load(childId: childId, api: api)
@@ -79,6 +87,8 @@ final class AppsManagementViewModel {
     }
 
     func decideWebsite(_ request: BrowserAccessRequest, decision: BrowserAccessDecision, childId: String, api: EGuardAPIService) async {
+        guard busyIds.insert(request.id).inserted else { return }
+        defer { busyIds.remove(request.id) }
         do {
             _ = try await api.decideBrowserAccessRequest(id: request.id, decision: decision)
             await load(childId: childId, api: api)
@@ -95,7 +105,18 @@ struct AppsManagementView: View {
     var requestId: String? = nil
 
     @Environment(AppModel.self) private var model
-    @State private var viewModel = AppsManagementViewModel()
+    @State private var viewModel: AppsManagementViewModel
+
+    /// `startPending`: open on Pending (from a request alert or "Review requests"), where requests are answered.
+    /// `requestId`: the website request to highlight there. Both apply once, when the screen is created, so
+    /// switching filters and coming back doesn't snap to Pending again.
+    init(childId: String, startPending: Bool = false, requestId: String? = nil) {
+        self.childId = childId
+        self.requestId = requestId
+        let viewModel = AppsManagementViewModel()
+        if startPending || requestId != nil { viewModel.filter = .pending }
+        _viewModel = State(initialValue: viewModel)
+    }
 
     var body: some View {
         @Bindable var viewModel = viewModel
@@ -166,11 +187,8 @@ struct AppsManagementView: View {
         }
         .navigationTitle("App Management")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            // A website-request alert lands on the Pending tab, where the request is listed.
-            if requestId != nil { viewModel.filter = .pending }
-        }
         .task(id: viewModel.filter) { await viewModel.load(childId: childId, api: model.api) }
+        .refreshable { await viewModel.load(childId: childId, api: model.api) }
         .alert("Add an app", isPresented: $viewModel.isAdding) {
             TextField("App name", text: $viewModel.newAppName)
             Button("Add") { Task { _ = await viewModel.addApp(childId: childId, api: model.api) } }
@@ -237,9 +255,11 @@ struct AppsManagementView: View {
                     Button("Deny") { Task { await viewModel.decideWebsite(request, decision: .deny, childId: childId, api: model.api) } }
                         .font(EGuardTypography.label)
                         .foregroundStyle(EGuardColors.danger)
+                        .disabled(viewModel.isBusy(request.id))
                     Button("Allow") { viewModel.websiteRequestToApprove = request }
                         .font(EGuardTypography.label)
                         .foregroundStyle(EGuardColors.primary)
+                        .disabled(viewModel.isBusy(request.id))
                 }
                 .padding(.vertical, EGuardSpacing.xxs)
                 .accessibilityIdentifier("apps.webrequest.\(request.id)")
@@ -314,12 +334,12 @@ struct AppsManagementView: View {
 
     private func appRow(_ app: ChildApp) -> some View {
         HStack(spacing: EGuardSpacing.sm) {
-            IconTile(symbolName: "app.fill", tint: app.approval == .blocked ? EGuardColors.danger : (app.isRequested ? EGuardColors.warning : EGuardColors.primary))
+            IconTile(symbolName: "app.fill", tint: app.isBlocked ? EGuardColors.danger : (app.isRequested ? EGuardColors.warning : EGuardColors.primary))
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name).font(EGuardTypography.label)
                 Text([app.subtitle, app.categoryText].compactMap { $0 }.joined(separator: " · "))
                     .font(EGuardTypography.caption)
-                    .foregroundStyle(app.approval == .blocked ? EGuardColors.danger : EGuardColors.textSecondary)
+                    .foregroundStyle(app.isBlocked ? EGuardColors.danger : EGuardColors.textSecondary)
             }
             Spacer()
             if app.isRequested {
@@ -327,9 +347,11 @@ struct AppsManagementView: View {
                 Button("Decline") { Task { await viewModel.setAllowed(false, app: app, childId: childId, api: model.api) } }
                     .font(EGuardTypography.label)
                     .foregroundStyle(EGuardColors.danger)
+                    .disabled(viewModel.isBusy(app.id))
                 Button("Approve") { Task { await viewModel.setAllowed(true, app: app, childId: childId, api: model.api) } }
                     .font(EGuardTypography.label)
                     .foregroundStyle(EGuardColors.primary)
+                    .disabled(viewModel.isBusy(app.id))
             } else {
                 Toggle("Allowed", isOn: Binding(
                     get: { app.allowed },
@@ -337,6 +359,7 @@ struct AppsManagementView: View {
                 ))
                 .labelsHidden()
                 .tint(EGuardColors.primary)
+                .disabled(viewModel.isBusy(app.id))
             }
         }
         .padding(.vertical, EGuardSpacing.xxs)
@@ -409,6 +432,7 @@ struct AppLimitSheet: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         AppsManagementView(childId: "child_1")
@@ -416,3 +440,4 @@ struct AppLimitSheet: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

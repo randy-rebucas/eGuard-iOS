@@ -8,12 +8,20 @@ struct FamilyView: View {
     @State private var isAddingParent = false
     @State private var parentName = ""
     @State private var parentEmail = ""
+    /// Kept until the removal finishes; the dialog has its own flag, which closing it clears first.
     @State private var memberToRemove: FamilyMember?
+    @State private var isConfirmingMemberRemoval = false
     @State private var message: String?
     @State private var errorMessage: String?
     @State private var isSending = false
-    @State private var isRenaming = false
-    @State private var newFamilyName = ""
+    @State private var isEditingFamily = false
+    @State private var familyName = ""
+    @State private var timeZone = ""
+    @State private var zoneSearch = ""
+    @State private var editError: String?
+    @State private var isSavingFamily = false
+    /// The invitation being resent: a second tap would email the parent twice.
+    @State private var resendingId: String?
 
     var body: some View {
         EGuardScreen {
@@ -24,16 +32,16 @@ struct FamilyView: View {
                 ErrorCard(message: error) { Task { await loadFamily() } }
             case .loaded(let family):
                 ScreenHeader(title: family.name, subtitle: subtitle(family))
-
-                // The name appears in invitations and the weekly summary. Admin only; read-only otherwise.
+                // The admin renames the family and sets its time zone, as on the web
                 if family.canManage {
-                    Button("Rename family") {
-                        newFamilyName = family.name
-                        isRenaming = true
+                    Button("Edit name and time zone", systemImage: "pencil") {
+                        familyName = family.name
+                        timeZone = family.timezone
+                        zoneSearch = ""
+                        editError = nil
+                        isEditingFamily = true
                     }
-                    .font(EGuardTypography.label)
-                    .foregroundStyle(EGuardColors.primary)
-                    .accessibilityIdentifier("family.rename")
+                    .buttonStyle(.eGuardSecondary)
                 }
 
                 if let plan = family.plan {
@@ -71,9 +79,13 @@ struct FamilyView: View {
                                 if family.canManage, !member.you, member.role == .parent {
                                     Menu {
                                         if member.isPending {
-                                            Button("Resend invitation", systemImage: "envelope") { Task { await resend(member) } }
+                                            Button(resendingId == member.id ? "Sending…" : "Resend invitation", systemImage: "envelope") { Task { await resend(member) } }
+                                                .disabled(resendingId != nil)
                                         }
-                                        Button(member.isPending ? "Withdraw invitation" : "Remove", systemImage: "trash", role: .destructive) { memberToRemove = member }
+                                        Button(member.isPending ? "Withdraw invitation" : "Remove", systemImage: "trash", role: .destructive) {
+                                            memberToRemove = member
+                                            isConfirmingMemberRemoval = true
+                                        }
                                     } label: {
                                         Image(systemName: "ellipsis.circle")
                                             .foregroundStyle(EGuardColors.neutral)
@@ -121,16 +133,15 @@ struct FamilyView: View {
         .navigationTitle("Family")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadFamily() }
+        .refreshable { await loadFamily() }
         .sheet(isPresented: $isAddingParent) { addParentSheet }
-        .alert("Rename family", isPresented: $isRenaming) {
-            TextField("Family name", text: $newFamilyName)
-            Button("Save") { Task { await renameFamily() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("2 to 80 characters. The name appears in invitations and the weekly summary.")
-        }
-        .confirmationDialog(memberToRemove?.isPending == true ? "Withdraw the invitation to \(memberToRemove?.name ?? "this parent")?" : "Remove \(memberToRemove?.name ?? "parent")?", isPresented: Binding(get: { memberToRemove != nil }, set: { if !$0 { memberToRemove = nil } }), titleVisibility: .visible) {
-            Button(memberToRemove?.isPending == true ? "Withdraw" : "Remove", role: .destructive) { Task { await removeMember() } }
+        .sheet(isPresented: $isEditingFamily) { editFamilySheet }
+        .confirmationDialog(memberToRemove?.isPending == true ? "Withdraw the invitation to \(memberToRemove?.name ?? "this parent")?" : "Remove \(memberToRemove?.name ?? "parent")?", isPresented: $isConfirmingMemberRemoval, titleVisibility: .visible) {
+            Button(memberToRemove?.isPending == true ? "Withdraw" : "Remove", role: .destructive) {
+                // Read now: closing the dialog clears `memberToRemove` before the Task runs
+                guard let member = memberToRemove else { return }
+                Task { await removeMember(member) }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(memberToRemove?.isPending == true ? "Their invitation link stops working." : "They are signed out everywhere and lose access to the family.")
@@ -170,6 +181,73 @@ struct FamilyView: View {
         }
     }
 
+    /// Region/City zones (no "Etc/GMT+8" or old aliases), as the web's picker offers.
+    static let timeZones: [String] = TimeZone.knownTimeZoneIdentifiers
+        .filter { id in ["Africa/", "America/", "Antarctica/", "Asia/", "Atlantic/", "Australia/", "Europe/", "Indian/", "Pacific/"].contains { id.hasPrefix($0) } }
+        .sorted()
+
+    /// "manila", "new york" and "America/New_York" all find their zone.
+    static func matchingZones(_ query: String) -> [String] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "_")
+        return q.isEmpty ? timeZones : timeZones.filter { $0.lowercased().contains(q) }
+    }
+
+    private var editFamilySheet: some View {
+        NavigationStack {
+            EGuardScreen {
+                ScreenHeader(title: "Family name and time zone", subtitle: "Bedtime, daily limits and \"today\" follow this time zone on every child's devices.")
+                EGuardTextField(label: "Family name", placeholder: "Cruz Family", text: $familyName, symbolName: "house", autocapitalization: .words)
+                EGuardCard {
+                    EGuardValueRow(label: "Time zone", value: timeZone.replacingOccurrences(of: "_", with: " "))
+                    TextField("Find a city", text: $zoneSearch)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    ForEach(Self.matchingZones(zoneSearch).prefix(30), id: \.self) { zone in
+                        Button {
+                            timeZone = zone
+                        } label: {
+                            HStack {
+                                Text(zone.replacingOccurrences(of: "_", with: " ")).font(EGuardTypography.callout)
+                                Spacer()
+                                if zone == timeZone { Image(systemName: "checkmark").foregroundStyle(EGuardColors.primary) }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                InlineError(message: editError)
+            } actions: {
+                Button(isSavingFamily ? "Saving…" : "Save") { Task { await saveFamily() } }
+                    .buttonStyle(.eGuardPrimary)
+                    .disabled(familyName.trimmingCharacters(in: .whitespaces).count < 2 || timeZone.isEmpty || isSavingFamily)
+                Button("Cancel") { isEditingFamily = false }
+                    .buttonStyle(.eGuardText)
+            }
+            .navigationTitle("Family")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    /// Only what changed: PATCH /family for the name, PATCH /me `timezone` for the zone (both admin only).
+    private func saveFamily() async {
+        guard let family = state.value else { return }
+        isSavingFamily = true
+        defer { isSavingFamily = false }
+        do {
+            let name = familyName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if name != family.name { _ = try await model.api.renameFamily(name: name) }
+            if timeZone != family.timezone { _ = try await model.api.updateMe(name: nil, email: nil, password: nil, timezone: timeZone) }
+            isEditingFamily = false
+            editError = nil
+            message = "Saved."
+            await model.refreshUser()
+        } catch {
+            editError = error.localizedDescription
+        }
+        // Either way: a rename can have gone through before the time zone failed
+        await loadFamily()
+    }
+
     private func loadFamily() async {
         if state.value == nil { state = .loading }
         state = await load { try await model.api.family() }
@@ -194,19 +272,10 @@ struct FamilyView: View {
         }
     }
 
-    private func renameFamily() async {
-        do {
-            let family = try await model.api.renameFamily(name: newFamilyName.trimmingCharacters(in: .whitespaces))
-            state = .loaded(family)
-            message = "The family is now called \(family.name)."
-            errorMessage = nil
-            await model.refreshDashboard()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
     private func resend(_ member: FamilyMember) async {
+        guard resendingId == nil else { return }
+        resendingId = member.id
+        defer { resendingId = nil }
         do {
             try await model.api.resendInvitation(memberId: member.id)
             message = "We sent \(member.name) a new invitation link."
@@ -216,8 +285,7 @@ struct FamilyView: View {
         }
     }
 
-    private func removeMember() async {
-        guard let member = memberToRemove else { return }
+    private func removeMember(_ member: FamilyMember) async {
         do {
             try await model.api.removeMember(id: member.id)
             message = member.isPending ? "The invitation to \(member.name) was withdrawn." : "\(member.name) was removed."
@@ -229,6 +297,7 @@ struct FamilyView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         FamilyView()
@@ -236,3 +305,4 @@ struct FamilyView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

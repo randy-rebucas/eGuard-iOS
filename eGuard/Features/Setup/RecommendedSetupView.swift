@@ -60,6 +60,7 @@ struct RecommendedSetupView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
     @State private var viewModel = RecommendedSetupViewModel()
+    @State private var isConfirmingReplace = false
 
     private var child: ChildSummary? { model.children.first { $0.id == childId } }
 
@@ -115,7 +116,12 @@ struct RecommendedSetupView: View {
             }
         } actions: {
             Button("Review & Configure") {
-                router.push(.setupProgress(childId: childId, profile: profile, overrides: viewModel.overrides, categoryLimits: viewModel.categoryLimits))
+                // With a device paired, the next screen sends all ten settings at once
+                if viewModel.state.value?.settings.contains(where: { !$0.devices.isEmpty }) == true {
+                    isConfirmingReplace = true
+                } else {
+                    router.push(.setupProgress(childId: childId, profile: profile, overrides: viewModel.overrides, categoryLimits: viewModel.categoryLimits))
+                }
             }
             .buttonStyle(.eGuardPrimary)
             .disabled(viewModel.state.value == nil)
@@ -123,6 +129,14 @@ struct RecommendedSetupView: View {
         }
         .brandNavigationTitle()
         .task { await viewModel.load(childId: childId, profile: profile, api: model.api) }
+        .confirmationDialog("Apply these settings?", isPresented: $isConfirmingReplace, titleVisibility: .visible) {
+            Button("Apply to \(child?.name ?? "the child")'s devices") {
+                router.push(.setupProgress(childId: childId, profile: profile, overrides: viewModel.overrides, categoryLimits: viewModel.categoryLimits))
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All ten protections change to what's shown here, replacing \(child?.name ?? "the child")'s current settings and any change still waiting for a device, including another parent's.")
+        }
         .sheet(item: $viewModel.editingKey) { key in
             ProtectionConfigSheet(key: key, config: viewModel.binding(for: key))
                 .presentationDetents([.medium, .large])
@@ -146,7 +160,7 @@ struct RecommendedSetupView: View {
         } trailing: {
             if setting.devices.contains(where: { $0.capability == .unsupported }) && setting.devices.allSatisfy({ $0.capability == .unsupported }) {
                 StatusPill(text: "Not supported", tint: EGuardColors.neutral)
-            } else if setting.devices.contains(where: { $0.capability == .guided || $0.capability == .verifyOnly }) {
+            } else if setting.devices.contains(where: { $0.capability.isGuided }) {
                 StatusPill(text: "Guided", tint: EGuardColors.accent)
             }
         }
@@ -229,6 +243,7 @@ extension String: @retroactive Identifiable {
     public var id: String { self }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         RecommendedSetupView(childId: "child_1", profile: "PROTECTED")
@@ -236,3 +251,4 @@ extension String: @retroactive Identifiable {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

@@ -43,6 +43,16 @@ nonisolated enum ProtectionKey {
         LucideIcon.symbol(for: icon(key))
     }
 
+    /// Whether a device's reported config is the one asked for, as the server compares them: exactly, except WEB,
+    /// where only `mode` counts (`blockedSites` is the policy's own count; iOS has no site list and reports 0).
+    static func reportMatches(key: String, reported: JSONValue?, policy: JSONValue?) -> Bool {
+        guard let reported, let policy else { return reported == nil && policy == nil }
+        let device = reported.removing("key")
+        let asked = policy.removing("key")
+        if key == "WEB" { return device["mode"] == asked["mode"] }
+        return device == asked
+    }
+
     /// One line explaining what the protection does.
     static func explanation(_ key: String) -> String {
         switch key {
@@ -67,12 +77,14 @@ nonisolated enum ProtectionConfigFormatter {
         switch key {
         case "SCREEN_TIME":
             guard let minutes = config["dailyMinutes"]?.intValue else { return "Not set" }
+            // Worded as the server's describeConfig (lib/protections.ts): weekends named only when they differ
             let weekend = config["weekendMinutes"]?.intValue
-            return weekend.map { "\(duration(minutes)) / day, \(duration($0)) weekends" } ?? "\(duration(minutes)) / day"
+            guard let weekend, weekend != minutes else { return "\(duration(minutes)) / day" }
+            return "\(duration(minutes)) / day, \(duration(weekend)) weekends"
         case "BEDTIME":
             guard config["enabled"]?.boolValue != false,
                   let start = config["start"]?.stringValue, let end = config["end"]?.stringValue else { return "Off" }
-            let days = config["days"]?.stringValue == "SCHOOL_NIGHTS" ? " · School nights" : ""
+            let days = config["days"]?.stringValue == "SCHOOL_NIGHTS" ? ", school nights" : ""
             return "\(time(start)) – \(time(end))\(days)"
         case "APP_RESTRICTIONS":
             guard let rating = config["maxAgeRating"]?.intValue else { return "Not set" }
@@ -83,19 +95,18 @@ nonisolated enum ProtectionConfigFormatter {
         case "APP_APPROVAL":
             return config["enabled"]?.boolValue == true ? "Approval required" : "Off"
         case "WEB":
+            // blockedSites isn't named: the policy's number is a placeholder
             switch config["mode"]?.stringValue {
-            case "FILTER":
-                let blocked = config["blockedSites"]?.intValue ?? 0
-                return blocked > 0 ? "Filtered, \(blocked) sites blocked" : "Filtered"
-            case "ALLOWLIST": return "Allow list only"
+            case "FILTER": return "Adult and unsafe sites filtered"
+            case "ALLOWLIST": return "Allowed sites only"
             default: return "Off"
             }
         case "DOWNLOADS":
-            return config["requireApproval"]?.boolValue == true ? "Parent approval" : "Allowed"
+            return config["requireApproval"]?.boolValue == true ? "Parent approval" : "Unrestricted"
         case "LOCATION":
-            return config["sharing"]?.boolValue == true ? "Sharing" : "Off"
+            return config["sharing"]?.boolValue == true ? "Sharing" : "Sharing off"
         case "NOTIFICATIONS":
-            return config["quietDuringBedtime"]?.boolValue == true ? "Quiet during bedtime" : "Off"
+            return config["quietDuringBedtime"]?.boolValue == true ? "Quiet during bedtime" : "Unrestricted"
         case "UNINSTALL_PROTECTION":
             return config["enabled"]?.boolValue == true ? "On" : "Off"
         default:

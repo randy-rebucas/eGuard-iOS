@@ -14,16 +14,24 @@ nonisolated struct PushAlert: Equatable, Sendable {
     var alertId: String
     var category: String?
     var childId: String?
+    /// The alert's button action (`actionType`, `deviceId`, `key` in the push data), so a tap opens the same
+    /// screen the button does. Absent from older servers and for alerts without one.
+    var action: AlertAction?
 
-    init(alertId: String, category: String? = nil, childId: String? = nil) {
+    init(alertId: String, category: String? = nil, childId: String? = nil, action: AlertAction? = nil) {
         self.alertId = alertId
         self.category = category
         self.childId = childId
+        self.action = action
     }
 
     init?(userInfo: [AnyHashable: Any]) {
         guard userInfo["type"] as? String == "alert", let alertId = userInfo["alertId"] as? String else { return nil }
-        self.init(alertId: alertId, category: userInfo["category"] as? String, childId: userInfo["childId"] as? String)
+        let childId = userInfo["childId"] as? String
+        let action = (userInfo["actionType"] as? String).map {
+            AlertAction(type: $0, label: "", childId: childId, key: userInfo["key"] as? String, deviceId: userInfo["deviceId"] as? String)
+        }
+        self.init(alertId: alertId, category: userInfo["category"] as? String, childId: childId, action: action)
     }
 }
 
@@ -79,21 +87,44 @@ final class PushService: NSObject, UNUserNotificationCenterDelegate {
         #endif
     }
 
-    /// Forgets the token on this install, e.g. before the phone becomes a child's device.
-    func deleteToken() {
+    /// Forgets the token on this install, so FCM stops delivering to it: before the phone becomes a child's
+    /// device, and on sign-out (the server may still hold it if signing out couldn't reach it). `renew` asks
+    /// for a fresh token afterwards, registered at the next sign-in.
+    func deleteToken(renew: Bool = false) {
         defer { fcmToken = nil }
         guard isConfigured else { return }
         #if canImport(FirebaseCore) && canImport(FirebaseMessaging)
-        Messaging.messaging().unregister { error in
+        Messaging.messaging().deleteToken { error in
             if let error { EGuardLog.app.error("Deleting the FCM token failed: \(error.localizedDescription)") }
+            guard renew else { return }
+            Messaging.messaging().token { token, _ in
+                Task { @MainActor in self.fcmToken = token }
+            }
         }
         #endif
     }
 
+    // MARK: Silent sync (child's device)
+
+    /// Runs one child-device sync (a no-op unless this is a paired child's device); set by `AppModel.make`.
+    var syncHandler: (() async -> Void)?
+
+    /// The server's silent "sync now" (`type: "sync"`, sent when a parent changes a setting or runs a check).
+    /// Runs a sync in the background, within the time iOS gives a background push.
+    func handleRemoteNotification(_ userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
+        guard userInfo["type"] as? String == "sync", let syncHandler else { return .noData }
+        await syncHandler()
+        return .newData
+    }
+
     // MARK: UNUserNotificationCenterDelegate
 
+    /// A signed-in parent (set by the app). Alerts that still arrive after sign-out, before the server forgets this
+    /// phone's token, aren't shown while the app is open.
+    var presentsAlerts = false
+
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound, .badge]
+        await MainActor.run { presentsAlerts } ? [.banner, .list, .sound, .badge] : []
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {

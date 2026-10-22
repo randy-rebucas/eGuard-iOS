@@ -59,8 +59,17 @@ final class MockRestrictionService: RestrictionService {
     }
 
     func applyAppInstallation(_ policy: AppInstallationPolicy) throws {
+        try applyInstallApproval(.appApproval, required: policy == .blocked)
+    }
+
+    func applyInstallApproval(_ reason: InstallApprovalReason, required: Bool) throws {
         try failIfNeeded()
-        state.denyAppInstallation = policy == .blocked ? true : nil
+        if required {
+            state.installApprovalReasons.insert(reason)
+        } else {
+            state.installApprovalReasons.remove(reason)
+        }
+        state.denyAppInstallation = state.installApprovalReasons.isEmpty ? nil : true
     }
 
     func applyExplicitContent(block: Bool) throws {
@@ -88,18 +97,26 @@ final class MockRestrictionService: RestrictionService {
     func applyMaximumAppRating(age: Int?) throws {
         try failIfNeeded()
         // Round-trip through Apple's rating values exactly like the live service.
-        state.maximumAppRatingAge = age.flatMap { RatingTiers.age(forRating: RatingTiers.rating(forAge: $0, in: RatingTiers.appStore), in: RatingTiers.appStore) }
+        state.maximumAppRating = age.map { RatingTiers.rating(forAge: $0, in: RatingTiers.appStore) }
+        state.maximumAppRatingAge = state.maximumAppRating.flatMap { RatingTiers.age(forRating: $0, in: RatingTiers.appStore) }
     }
 
     func applyContentRating(age: Int?) throws {
         try failIfNeeded()
-        state.contentRatingAge = age.flatMap { RatingTiers.age(forRating: RatingTiers.rating(forAge: $0, in: RatingTiers.movies), in: RatingTiers.movies) }
+        state.movieRating = age.map { RatingTiers.rating(forAge: $0, in: RatingTiers.movies) }
+        state.tvRating = age.map { RatingTiers.rating(forAge: $0, in: RatingTiers.tv) }
+        state.contentRatingAge = state.movieRating.flatMap { RatingTiers.age(forRating: $0, in: RatingTiers.movies) }
         state.denyExplicitContent = age.map { $0 < 18 ? true : nil } ?? nil
     }
 
     func applyAppRemoval(deny: Bool) throws {
         try failIfNeeded()
         state.denyAppRemoval = deny ? true : nil
+    }
+
+    func applyAutomaticDateAndTime(require: Bool) throws {
+        try failIfNeeded()
+        state.requiresAutomaticDateAndTime = require ? true : nil
     }
 
     func clearAllRestrictions() {
@@ -155,14 +172,16 @@ final class MockActivityScheduleService: ActivityScheduleService {
         state.socialAppsLimitMinutes = nil
     }
 
-    func scheduleScreenTimeLimit(minutes: Int, selection: ActivitySelectionSnapshot) throws {
+    func scheduleScreenTimeLimit(weekdayMinutes: Int, weekendMinutes: Int, selection: ActivitySelectionSnapshot) throws {
         if let errorToThrow { throw errorToThrow }
         guard !selection.isEmpty else { throw ProtectionConfigurationError.selectionRequired }
-        state.screenTimeLimitMinutes = minutes
+        state.screenTimeWeekdayMinutes = weekdayMinutes
+        state.screenTimeWeekendMinutes = weekendMinutes
     }
 
     func stopScreenTimeLimit() {
-        state.screenTimeLimitMinutes = nil
+        state.screenTimeWeekdayMinutes = nil
+        state.screenTimeWeekendMinutes = nil
     }
 
     func stopAll() {

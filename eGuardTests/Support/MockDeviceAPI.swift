@@ -1,6 +1,8 @@
 import Foundation
 @testable import eGuard
 
+// Debug only: the mock server never ships in a Release build.
+#if DEBUG
 /// A child device API backed by the same in-memory server as `MockEGuardAPI`, so a paired mock device
 /// shows up on the parent side and its reports verify the parent's changes.
 final class MockDeviceAPI: DeviceAPIService {
@@ -77,3 +79,4 @@ final class MockDeviceAPI: DeviceAPIService {
         return server.recordDeviceEvent(deviceId: deviceId, event: event)
     }
 }
+#endif

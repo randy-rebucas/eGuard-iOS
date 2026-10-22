@@ -70,6 +70,7 @@ struct HealthCheckView: View {
         }
         .modifier(HealthTitle(isOnboarding: isOnboarding))
         .task { await loadReport() }
+        .refreshable { await loadReport() }
     }
 
     private var fixTitle: String? {
@@ -78,7 +79,8 @@ struct HealthCheckView: View {
     }
 
     private func loadReport() async {
-        state = .loading
+        // Keep the report on screen while a pull-to-refresh reloads it
+        if state.value == nil { state = .loading }
         state = await load { try await model.api.health(childId: childId) }
     }
 
@@ -182,8 +184,8 @@ struct HealthCheckView: View {
                     }
                 } label: {
                     HStack(alignment: .firstTextBaseline, spacing: EGuardSpacing.sm) {
-                        Image(systemName: EGuardTheme.symbol(for: check.status.healthStatus))
-                            .foregroundStyle(EGuardTheme.color(for: check.status.healthStatus))
+                        Image(systemName: EGuardTheme.symbol(for: check.displayStatus))
+                            .foregroundStyle(EGuardTheme.color(for: check.displayStatus))
                             .font(.title3)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(check.name)
@@ -197,13 +199,14 @@ struct HealthCheckView: View {
                             }
                         }
                         Spacer()
-                        HealthStatusBadge(status: check.status.healthStatus)
+                        HealthStatusBadge(status: check.displayStatus)
                     }
                     .padding(.vertical, EGuardSpacing.xxs)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(check.status == .unsupported || (check.fixChildId == nil && childId == nil))
+                // "Set by you" can still be changed (new steps to follow); plain "Not supported" can't
+                .disabled((check.status == .unsupported && !check.isParentSet) || (check.fixChildId == nil && childId == nil))
                 .accessibilityIdentifier("health.check.\(check.key.lowercased())")
                 if check.id != report.checks.last?.id { Divider() }
             }
@@ -241,6 +244,7 @@ private struct HealthTitle: ViewModifier {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         HealthCheckView(childId: nil, isOnboarding: false)
@@ -248,3 +252,4 @@ private struct HealthTitle: ViewModifier {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

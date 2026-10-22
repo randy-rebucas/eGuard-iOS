@@ -101,6 +101,7 @@ enum EGuardTheme {
         case .actionRequired: EGuardColors.danger
         case .unsupported: EGuardColors.neutral
         case .notConfigured: EGuardColors.warning
+        case .setByYou: EGuardColors.accent
         }
     }
 
@@ -111,6 +112,7 @@ enum EGuardTheme {
         case .actionRequired: "exclamationmark.circle.fill"
         case .unsupported: "minus.circle.fill"
         case .notConfigured: "exclamationmark.circle.fill"
+        case .setByYou: "person.crop.circle.badge.checkmark"
         }
     }
 

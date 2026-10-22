@@ -243,7 +243,7 @@ struct SpecAlignmentTests {
         let paired = try api.redeemPairingCode(code.code, name: "Mia's iPad", platform: .ios, model: "iPad", kind: "TABLET", osVersion: "iOS 26.0")
         let before = try await api.device(id: paired.deviceId)
         #expect(before.firstCheck == true)
-        #expect(before.device.statusText == "Waiting for first check")
+        #expect(before.device.statusTitle == "Waiting for first check")
         _ = api.recordDeviceReport(deviceId: paired.deviceId, entries: [ReportEntry(key: "BEDTIME", config: .object(["enabled": .bool(false), "start": .string("22:00"), "end": .string("06:00"), "days": .string("EVERY_DAY")]))], full: true)
         let after = try await api.device(id: paired.deviceId)
         #expect(after.firstCheck == false)
@@ -281,7 +281,7 @@ struct SpecAlignmentTests {
         let api = MockEGuardAPI.seeded()
         let dashboard = try await api.dashboard()
         #expect(dashboard.browserCount == 1)
-        #expect(dashboard.slotsUsed == dashboard.deviceCount + 1)
+        #expect(dashboard.connectedDevices == dashboard.deviceCount + 1)
         let browser = try #require(try await api.browsers().first)
         #expect(browser.stateLabel == "Protected")
     }

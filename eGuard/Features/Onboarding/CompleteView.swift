@@ -15,7 +15,8 @@ struct CompleteView: View {
     /// True only when every evaluated protection is verified. The copy never overclaims.
     private var isFullyProtected: Bool {
         guard let report = state.value, report.total > 0 else { return false }
-        return report.fixCount == 0
+        // Nothing to fix isn't verified: an offline device's last known state isn't in `toFix` either
+        return report.fixCount == 0 && report.healthScore.isVerified
     }
 
     var body: some View {
@@ -58,7 +59,7 @@ struct CompleteView: View {
             case .loaded(let report):
                 EGuardCard {
                     ForEach(report.checks) { check in
-                        ChecklistRow(title: title(for: check), status: check.status.healthStatus)
+                        ChecklistRow(title: title(for: check), status: check.displayStatus)
                     }
                 }
             }
@@ -109,6 +110,7 @@ struct CompleteView: View {
     private func title(for check: HealthCheck) -> String {
         switch check.status {
         case .pass: "\(check.name) verified"
+        case .unsupported where check.isParentSet: "\(check.name) set by you"
         case .unsupported: "\(check.name) not supported here"
         case .notConfigured: child?.deviceCount == 0 ? "\(check.name) saved" : "\(check.name) not configured"
         default: "\(check.name) needs attention"
@@ -116,6 +118,7 @@ struct CompleteView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         CompleteView(childId: "child_1", batchId: nil)
@@ -123,3 +126,4 @@ struct CompleteView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

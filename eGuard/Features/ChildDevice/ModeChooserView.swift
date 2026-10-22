@@ -78,6 +78,7 @@ struct ModeChooserView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         ModeChooserView()
@@ -85,3 +86,4 @@ struct ModeChooserView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

@@ -59,12 +59,16 @@ struct RootView: View {
         .onChange(of: model.pendingPushAlert) { _, _ in Task { await handlePendingPushAlert() } }
     }
 
-    /// A tapped alert push opens the Alerts tab (or the child's app requests when the alert is about apps).
+    /// A tapped alert push opens what the alert's button opens (its `action`), else the child's app requests when
+    /// the alert is about apps (older servers), else the Alerts tab.
     private func handlePendingPushAlert() async {
         guard model.bootstrapState == .ready, let alert = await model.consumePushAlert() else { return }
-        if alert.category == "APPS", let childId = alert.childId {
+        if let action = alert.action, AppRouter.canOpen(action) {
             router.popToRoot()
-            router.push(.appsManagement(childId: childId))
+            _ = router.open(action)
+        } else if alert.category == "APPS", let childId = alert.childId {
+            router.popToRoot()
+            router.push(.appsManagement(childId: childId, pending: true))
         } else {
             router.show(.alerts)
         }
@@ -106,6 +110,7 @@ struct RootView: View {
         case .welcome: WelcomeView()
         case .childSetup: ChildSetupView(startStep: .code)
         case .createAccount: CreateAccountView()
+        case .signupCode(let signup): SignupCodeView(signup: signup)
         case .signIn: SignInView()
         case .forgotPassword: ForgotPasswordView()
         case .twoFactorCode(let challenge): TwoFactorCodeView(challenge: challenge)
@@ -123,7 +128,7 @@ struct RootView: View {
         case .protectionEditor(let childId, let key): ProtectionEditorView(childId: childId, key: key)
         case .childProfile(let childId): ChildProfileView(childId: childId)
         case .screenTime(let childId): ScreenTimeView(childId: childId)
-        case .appsManagement(let childId, let requestId): AppsManagementView(childId: childId, requestId: requestId)
+        case .appsManagement(let childId, let pending, let requestId): AppsManagementView(childId: childId, startPending: pending, requestId: requestId)
         case .location(let childId): LocationView(childId: childId)
         case .deviceDetail(let deviceId): DeviceDetailView(deviceId: deviceId)
         case .browserPolicy(let childId): BrowserPolicyView(childId: childId)
@@ -175,17 +180,23 @@ struct UpdateRequiredView: View {
     }
 }
 
+#if DEBUG
 #Preview("Mode chooser") {
     RootView()
         .environment(AppModel.live())
 }
+#endif
 
+#if DEBUG
 #Preview("Onboarding") {
     RootView()
         .environment(AppModel.live())
 }
+#endif
 
+#if DEBUG
 #Preview("Dashboard") {
     RootView()
         .environment(AppModel.live())
 }
+#endif

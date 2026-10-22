@@ -12,7 +12,8 @@ nonisolated enum EGuardPublisher {
     /// Also entered in App Store Connect as the app's privacy policy URL.
     static let privacyPolicyURL = URL(string: "https://www.eguard.family/privacy")!
     static let termsURL = URL(string: "https://www.eguard.family/terms")!
-    /// Account deletion happens on the web; the app links here so the process is reachable in-app.
+    /// The public page explaining account deletion. Deleting is done in the app (Settings › Account, `DELETE /me`);
+    /// this page is for the App Store listing and people without the app.
     static let deleteAccountURL = URL(string: "https://www.eguard.family/delete-account")!
 
     /// The website without its scheme, for display.

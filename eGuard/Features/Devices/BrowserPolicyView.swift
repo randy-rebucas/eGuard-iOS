@@ -60,6 +60,24 @@ struct BrowserPolicyView: View {
                     .font(EGuardTypography.caption)
                     .foregroundStyle(EGuardColors.textSecondary)
             }
+            // Levels come from the server, so the saved one is always among them
+            if let levels = policy.youtubeLevels, let current = draft.wrappedValue.youtubeRestrict,
+               let shown = levels.first(where: { $0.key == current }) {
+                Divider()
+                VStack(alignment: .leading, spacing: EGuardSpacing.xs) {
+                    Text("YouTube Restricted Mode").font(EGuardTypography.label)
+                    Picker("YouTube Restricted Mode", selection: Binding(
+                        get: { current },
+                        set: { draft.wrappedValue.youtubeRestrict = $0 }
+                    )) {
+                        ForEach(levels) { level in Text(level.label).tag(level.key) }
+                    }
+                    .pickerStyle(.segmented)
+                    Text([shown.text, "On youtube.com in this child's browsers, signed in or not. The YouTube app has its own setting."].compactMap { $0 }.joined(separator: " "))
+                        .font(EGuardTypography.caption)
+                        .foregroundStyle(EGuardColors.textSecondary)
+                }
+            }
         }
 
         if let categories = policy.categories, !categories.isEmpty {
@@ -184,6 +202,7 @@ struct BrowserPolicyView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         BrowserPolicyView(childId: "child_3")
@@ -191,3 +210,4 @@ struct BrowserPolicyView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

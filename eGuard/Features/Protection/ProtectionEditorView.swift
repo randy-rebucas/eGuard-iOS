@@ -12,6 +12,8 @@ final class ProtectionEditorViewModel {
     var config: JSONValue = .object([:])
     var isSaving = false
     var errorMessage: String?
+    /// "Saved. It applies when … is paired" for a child with no device yet.
+    var notice: String?
     var guideItem: BatchItem?
     /// True after a save the server only stored, because the child has no device to verify it yet.
     var savedWithoutDevice = false
@@ -43,11 +45,24 @@ final class ProtectionEditorViewModel {
         }
     }
 
+    /// Reloads the protection without the loading state: after a change finishes or is refused, so the next save
+    /// sends the current `version` and the form shows what's stored now.
+    func refresh(api: EGuardAPIService) async {
+        guard let latest = try? await api.protections(childId: childId).first(where: { $0.key == key }) else { return }
+        state = .loaded(latest)
+        config = latest.policy
+    }
+
     func save(api: EGuardAPIService) async {
+        if let problem = ProtectionConfigEditor.problem(key: key, config: config) {
+            errorMessage = problem
+            return
+        }
         isSaving = true
         defer { isSaving = false }
         savedWithoutDevice = false
         wasReplacedByOthers = false
+        notice = nil
         do {
             // `baseVersion` makes the server refuse to overwrite a change another parent made since this loaded.
             switch try await api.updateProtection(childId: childId, key: key, config: config, baseVersion: protection?.version) {
@@ -55,9 +70,11 @@ final class ProtectionEditorViewModel {
                 errorMessage = nil
                 poller.start(batchId: batch.batchId, api: api, initial: batch)
             case .saved:
+                // Stored only: the child has no device to verify it yet. Say "Saved", never "verified".
                 errorMessage = nil
                 savedWithoutDevice = true
-                await load(api: api)
+                notice = "Saved. It applies when a device is paired."
+                await refresh(api: api)
             }
         } catch let error as APIError where error.code == "stale" {
             // Show the parent what's there now rather than replacing it.
@@ -66,12 +83,16 @@ final class ProtectionEditorViewModel {
             await load(api: api)
         } catch {
             errorMessage = error.localizedDescription
+            // Changed elsewhere, or no device supports it: show what's there now
+            if case APIError.server(_, let code, _) = error, code == "stale" || code == "unsupported" {
+                await refresh(api: api)
+            }
         }
     }
 
     func confirm(api: EGuardAPIService) async {
         do {
-            try await poller.confirm(api: api)
+            try await poller.confirm(api: api, key: key)
             guideItem = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -87,12 +108,17 @@ final class ProtectionEditorViewModel {
     }
 
     var item: BatchItem? { poller.batch?.items.first { $0.key == key } }
+
+    /// A change (maybe another parent's) still waiting for the device. The form shows the stored value, which the
+    /// server keeps until the device verifies, so saving would replace that change: the parent confirms first.
+    var waitingChange: BatchItem? { item.flatMap { $0.status.isFinished ? nil : $0 } }
 }
 
 struct ProtectionEditorView: View {
     @Environment(AppModel.self) private var model
     @Environment(AppRouter.self) private var router
     @State private var viewModel: ProtectionEditorViewModel
+    @State private var isConfirmingReplace = false
 
     init(childId: String, key: String) {
         _viewModel = State(initialValue: ProtectionEditorViewModel(childId: childId, key: key))
@@ -151,29 +177,66 @@ struct ProtectionEditorView: View {
                 }
                 devicesCard(protection)
             }
+            // The "Saved" card above already covers a save without a device; this line is for any other notice.
+            if let notice = viewModel.notice, !viewModel.savedWithoutDevice {
+                Text(notice)
+                    .font(EGuardTypography.callout)
+                    .foregroundStyle(EGuardColors.success)
+            }
+            // A poll that stopped on an error would otherwise leave "Waiting for the device…" with no reason
+            if case .failed(let message) = viewModel.poller.phase {
+                InlineError(message: message)
+            }
             InlineError(message: viewModel.errorMessage)
         } actions: {
             if let item = viewModel.item, item.status == .awaitingParent {
                 Button("Show steps & verify") { viewModel.guideItem = item }
                     .buttonStyle(.eGuardPrimary)
                     .accessibilityIdentifier("feature.openSettings")
-                Button("Cancel change") { Task { await viewModel.cancel(api: model.api) } }
-                    .buttonStyle(.eGuardText)
+                // Cancelling is per batch: only offered when this protection is all of it (not a whole setup)
+                if viewModel.poller.batch?.items.count == 1 {
+                    Button("Cancel change") { Task { await viewModel.cancel(api: model.api) } }
+                        .buttonStyle(.eGuardText)
+                }
             } else if viewModel.poller.phase == .polling {
                 Button("Verifying…") {}
                     .buttonStyle(.eGuardPrimary)
                     .disabled(true)
             } else {
-                Button(viewModel.isSaving ? "Saving…" : "Save & Verify") { Task { await viewModel.save(api: model.api) } }
+                // With no device there's nothing to verify yet: it's saved and applied on pairing
+                Button(viewModel.isSaving ? "Saving…" : (viewModel.protection?.devices.isEmpty == true ? "Save" : "Save & Verify")) {
+                    if viewModel.waitingChange != nil {
+                        isConfirmingReplace = true
+                    } else {
+                        Task { await viewModel.save(api: model.api) }
+                    }
+                }
                     .buttonStyle(.eGuardPrimary)
-                    .disabled(viewModel.isSaving || viewModel.protection == nil || viewModel.protection?.isUnsupportedEverywhere == true)
+                    .disabled(viewModel.isSaving || viewModel.protection == nil || viewModel.protection?.isUnsupportedEverywhere == true
+                              || ProtectionConfigEditor.problem(key: viewModel.key, config: viewModel.config) != nil)
                     .accessibilityIdentifier("feature.configure")
             }
         }
         .navigationTitle(ProtectionKey.name(viewModel.key))
         .navigationBarTitleDisplayMode(.inline)
         .task { await viewModel.load(api: model.api) }
+        .refreshable { await viewModel.refresh(api: model.api) }
+        // Finished (verified, failed or cancelled): reload so the status, reports and version are current
+        .onChange(of: viewModel.poller.phase) { _, phase in
+            if phase == .done { Task { await viewModel.refresh(api: model.api) } }
+        }
         .onDisappear { viewModel.poller.stop() }
+        .confirmationDialog(
+            "Replace the waiting change?",
+            isPresented: $isConfirmingReplace,
+            titleVisibility: .visible
+        ) {
+            Button("Replace it", role: .destructive) { Task { await viewModel.save(api: model.api) } }
+            Button("Keep waiting", role: .cancel) {}
+        } message: {
+            Text(viewModel.waitingChange?.to.map { "A change to \($0) hasn't reached the device yet. Saving replaces it with yours." }
+                 ?? "A change hasn't reached the device yet. Saving replaces it with yours.")
+        }
         .sheet(item: $viewModel.guideItem) { item in
             GuidedStepsSheet(item: item) { Task { await viewModel.confirm(api: model.api) } }
                 .presentationDetents([.medium, .large])
@@ -199,7 +262,7 @@ struct ProtectionEditorView: View {
                 Label(ProtectionKey.name(protection.key), systemImage: LucideIcon.symbol(for: protection.icon, fallback: ProtectionKey.symbol(protection.key)))
                     .font(EGuardTypography.headline)
                 Spacer()
-                HealthStatusBadge(status: protection.status.healthStatus)
+                HealthStatusBadge(status: protection.displayStatus)
             }
             Text(ProtectionConfigFormatter.label(key: protection.key, config: viewModel.config))
                 .font(EGuardTypography.title)
@@ -221,11 +284,17 @@ struct ProtectionEditorView: View {
                     Spacer()
                     if viewModel.poller.phase == .polling { ProgressView() }
                 }
+                // The form above shows what's stored until the device verifies: say what it's changing to
+                if let to = item.to, !item.status.isFinished {
+                    Text("Changing to \(to)")
+                        .font(EGuardTypography.callout)
+                        .accessibilityIdentifier("feature.changingTo")
+                }
                 ForEach(item.devices) { device in
                     HStack {
                         Text(device.deviceName).font(EGuardTypography.callout)
                         Spacer()
-                        Text(device.offline && !device.status.isFinished ? "Waiting for device to come online" : (device.failureReason ?? device.status.title))
+                        Text(device.offline && !device.status.isFinished ? "Waiting for device to come online" : (device.failureReason ?? device.statusTitle))
                             .font(EGuardTypography.caption)
                             .foregroundStyle(EGuardColors.textSecondary)
                     }
@@ -243,7 +312,8 @@ struct ProtectionEditorView: View {
 
     private func statusTitle(_ item: BatchItem) -> String {
         switch item.status {
-        case .verified: "Saved and verified"
+        // The parent's word for a PARENT_SET step: saved, never "verified"
+        case .verified: item.isParentSetOnly ? "Set by you, not verified" : "Saved and verified"
         case .failed: "Setting not verified"
         case .awaitingParent: "Finish on the device"
         case .cancelled: "Change cancelled"
@@ -273,7 +343,7 @@ struct ProtectionEditorView: View {
         EGuardCard {
             SectionHeader(title: "What devices report")
             if protection.devices.isEmpty {
-                Text("No device is paired yet. The setting is saved and applied on pairing.")
+                Text("No device is paired yet. Saving keeps the setting, and it applies when a device is paired.")
                     .font(EGuardTypography.caption)
                     .foregroundStyle(EGuardColors.textSecondary)
             }
@@ -282,9 +352,13 @@ struct ProtectionEditorView: View {
                     HStack {
                         Text(device.deviceName).font(EGuardTypography.label)
                         Spacer()
-                        ModeBadge(mode: device.capability.mode)
+                        if device.capability == .parentSet {
+                            StatusPill(text: device.statusTitle, tint: EGuardTheme.color(for: device.displayStatus))
+                        } else {
+                            ModeBadge(mode: device.capability.mode)
+                        }
                     }
-                    Text(device.message ?? device.reportedLabel ?? device.status.title)
+                    Text(device.message ?? device.reportedLabel ?? device.statusTitle)
                         .font(EGuardTypography.caption)
                         .foregroundStyle(EGuardColors.textSecondary)
                     if let verified = device.lastVerifiedAt {
@@ -300,6 +374,7 @@ struct ProtectionEditorView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         ProtectionEditorView(childId: "child_1", key: "BEDTIME")
@@ -307,3 +382,4 @@ struct ProtectionEditorView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

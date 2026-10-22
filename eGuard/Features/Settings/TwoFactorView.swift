@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Two-step verification: `GET /me/two-factor`, setup, confirm, recovery codes, and turn off.
 struct TwoFactorView: View {
@@ -10,6 +11,8 @@ struct TwoFactorView: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
+    /// The app switcher snapshots the screen as the app leaves: the key and codes are hidden unless it's active.
+    @Environment(\.scenePhase) private var scenePhase
     @State private var state: LoadState<TwoFactorStatus> = .loading
     @State private var stage: Stage = .status
     @State private var code = ""
@@ -39,6 +42,17 @@ struct TwoFactorView: View {
         }
         .navigationTitle("Two-step verification")
         .navigationBarTitleDisplayMode(.inline)
+        // Shown once: leaving by Back would lose them, so "I've saved them" is the way out
+        .navigationBarBackButtonHidden(isShowingCodes)
+        // Belt and braces with the masked values above: a plain cover over the whole screen while the key
+        // or codes are up and the app isn't active, so the app-switcher snapshot shows neither.
+        .overlay {
+            if isShowingSecrets && scenePhase != .active {
+                EGuardColors.background
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
+            }
+        }
         .task { await loadStatus() }
         .alert(isAskingCode == .disable ? "Turn off two-step verification?" : "Make new recovery codes?", isPresented: Binding(get: { isAskingCode != nil }, set: { if !$0 { isAskingCode = nil } })) {
             TextField("Authenticator or recovery code", text: $code)
@@ -88,13 +102,14 @@ struct TwoFactorView: View {
             ScreenHeader(title: "Set up your authenticator", subtitle: "Open your authenticator app and add eGuard, then enter the 6-digit code it shows.")
             EGuardCard {
                 SectionHeader(title: "Setup key")
-                Text(setup.secret)
+                Text(scenePhase == .active ? setup.secret : String(repeating: "•", count: 16))
                     .font(.system(.title3, design: .monospaced, weight: .semibold))
                     .textSelection(.enabled)
+                    .privacySensitive()
                     .accessibilityIdentifier("twoFactor.secret")
                 HStack(spacing: EGuardSpacing.sm) {
                     Button(copied ? "Copied" : "Copy key") {
-                        UIPasteboard.general.string = setup.secret
+                        Self.copySecret(setup.secret)
                         copied = true
                     }
                     .buttonStyle(.eGuardSecondary)
@@ -116,12 +131,13 @@ struct TwoFactorView: View {
             )
             EGuardCard {
                 ForEach(codes, id: \.self) { recovery in
-                    Text(recovery)
+                    Text(scenePhase == .active ? recovery : "••••-••••-••••")
                         .font(.system(.body, design: .monospaced, weight: .medium))
                         .textSelection(.enabled)
+                        .privacySensitive()
                 }
                 Button(copied ? "Copied" : "Copy all codes") {
-                    UIPasteboard.general.string = codes.joined(separator: "\n")
+                    Self.copySecret(codes.joined(separator: "\n"))
                     copied = true
                 }
                 .buttonStyle(.eGuardSecondary)
@@ -137,10 +153,12 @@ struct TwoFactorView: View {
             case .status:
                 if status.available {
                     if status.enabled {
-                        Button("Make New Recovery Codes") { isAskingCode = .regenerate }
+                        Button(isWorking ? "Checking…" : "Make New Recovery Codes") { isAskingCode = .regenerate }
                             .buttonStyle(.eGuardSecondary)
+                            .disabled(isWorking)
                         Button("Turn Off") { isAskingCode = .disable }
                             .buttonStyle(.eGuardText)
+                            .disabled(isWorking)
                     } else {
                         Button(isWorking ? "Starting…" : "Turn On") { Task { await startSetup() } }
                             .buttonStyle(.eGuardPrimary)
@@ -198,8 +216,24 @@ struct TwoFactorView: View {
         }
     }
 
+    private var isShowingCodes: Bool {
+        if case .recoveryCodes = stage { return true }
+        return false
+    }
+
+    /// The setup key or recovery codes are on screen.
+    private var isShowingSecrets: Bool {
+        stage != .status
+    }
+
+    /// Copied for this phone only (not Universal Clipboard) and gone after two minutes.
+    private static func copySecret(_ text: String) {
+        UIPasteboard.general.setItems([[UTType.plainText.identifier: text]], options: [.localOnly: true, .expirationDate: Date.now.addingTimeInterval(120)])
+    }
+
     private func regenerate() async {
-        defer { code = "" }
+        isWorking = true
+        defer { code = ""; isWorking = false }
         do {
             let codes = try await model.api.regenerateRecoveryCodes(code: code.trimmingCharacters(in: .whitespaces))
             copied = false
@@ -211,7 +245,8 @@ struct TwoFactorView: View {
     }
 
     private func disable() async {
-        defer { code = "" }
+        isWorking = true
+        defer { code = ""; isWorking = false }
         do {
             state = .loaded(try await model.api.disableTwoFactor(code: code.trimmingCharacters(in: .whitespaces)))
             errorMessage = nil
@@ -222,6 +257,7 @@ struct TwoFactorView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         TwoFactorView()
@@ -229,3 +265,4 @@ struct TwoFactorView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

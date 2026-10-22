@@ -40,6 +40,14 @@ final class SetupProgressViewModel {
     var batchId: String? { poller.batch?.batchId ?? setup?.batchId }
 
     func start(api: EGuardAPIService) async {
+        // Back on this screen (from Health Check or an editor opened from a step): the profile was already sent, and
+        // sending it again would undo a change made since. Pick the batch up again instead.
+        if let setup {
+            if let batchId = setup.batchId, poller.phase == .idle {
+                poller.start(batchId: batchId, api: api)
+            }
+            return
+        }
         stage = .loadingChild
         do {
             child = try await api.child(id: childId)
@@ -89,7 +97,7 @@ final class SetupProgressViewModel {
 
     func confirmGuided(api: EGuardAPIService) async {
         do {
-            try await poller.confirm(api: api)
+            try await poller.confirm(api: api, key: guideItem?.key)
             guideItem = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -150,6 +158,11 @@ struct SetupProgressView: View {
                 .accessibilityIdentifier("setup.saved")
             case .tracking:
                 if let batch = viewModel.poller.batch {
+                    Text(batch.summary.progressText)
+                        .font(EGuardTypography.label)
+                        .foregroundStyle(EGuardColors.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("setup.summary")
                     batchSteps(batch)
                 }
                 pollerStatus
@@ -321,7 +334,7 @@ struct BatchItemRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(item.status.title)
+        .accessibilityValue(item.statusTitle)
         .accessibilityIdentifier("configure.feature.\(item.key.lowercased())")
     }
 
@@ -336,7 +349,10 @@ struct BatchItemRow: View {
     private var detail: String {
         if item.isOffline { return "Waiting for the device to come online" }
         switch item.status {
-        case .verified: return item.to ?? "Verified"
+        case .verified:
+            // Confirmed PARENT_SET steps are the parent's word, not a device verification
+            if item.isParentSetOnly { return item.to.map { "\($0) · set by you, not verified" } ?? "Set by you, not verified" }
+            return item.to ?? "Verified"
         case .failed: return item.failureReason ?? "Failed – tap to try again"
         case .awaitingParent: return "Finish on the device, then verify"
         case .pending: return "Sending to the device…"
@@ -396,7 +412,9 @@ struct GuidedStepsSheet: View {
                 if let device = item.devices.first(where: { $0.guide != nil }) {
                     ScreenHeader(
                         title: "Finish on \(device.deviceName)",
-                        subtitle: "Apple requires this setting to be changed on the child's device. Follow these steps, then verify."
+                        subtitle: device.isParentSet
+                            ? "Set this on the child's device by following these steps, then confirm."
+                            : "Apple requires this setting to be changed on the child's device. Follow these steps, then verify."
                     )
                     EGuardCard {
                         ForEach(Array((device.guide ?? []).enumerated()), id: \.offset) { index, step in
@@ -412,9 +430,15 @@ struct GuidedStepsSheet: View {
                     if let to = item.to {
                         EGuardValueRow(label: "Expected", value: to)
                     }
+                    if isParentSet {
+                        Text(Self.parentSetHint)
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                            .accessibilityIdentifier("guide.parentSetHint")
+                    }
                 }
             } actions: {
-                Button("I've done this, verify now") {
+                Button(isParentSet ? "I've done these steps" : "I've done this, verify now") {
                     onConfirm()
                     dismiss()
                 }
@@ -427,8 +451,14 @@ struct GuidedStepsSheet: View {
             .navigationBarTitleDisplayMode(.inline)
         }
     }
+
+    /// The step is PARENT_SET on the device being guided: confirming records it, nothing is verified.
+    private var isParentSet: Bool { item.devices.first(where: { $0.guide != nil })?.isParentSet ?? item.isParentSetOnly }
+
+    static let parentSetHint = "eGuard can't check this setting, so it's saved as set by you, not verified."
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         SetupProgressView(childId: "child_1", profile: "PROTECTED", overrides: [])
@@ -436,3 +466,4 @@ struct GuidedStepsSheet: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

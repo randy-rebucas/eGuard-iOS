@@ -52,9 +52,10 @@ final class BatchPoller {
     }
 
     /// Guided setup: the parent finished the steps on the device, so ask the server to verify.
-    func confirm(api: EGuardAPIService) async throws {
+    /// "I've done this, verify now" for the guide shown: [key] keeps the batch's other guided steps waiting.
+    func confirm(api: EGuardAPIService, key: String? = nil) async throws {
         guard let id = batch?.batchId else { return }
-        batch = try await api.confirmBatch(id: id)
+        batch = try await api.confirmBatch(id: id, key: key)
         start(batchId: id, api: api)
     }
 

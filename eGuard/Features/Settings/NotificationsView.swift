@@ -8,6 +8,7 @@ struct NotificationsView: View {
     @State private var status: UNAuthorizationStatus = .notDetermined
     @State private var state: LoadState<NotificationPrefs> = .loading
     @State private var errorMessage: String?
+    @State private var isSaving = false
 
     var body: some View {
         EGuardScreen {
@@ -42,10 +43,11 @@ struct NotificationsView: View {
             case .loaded(let prefs):
                 EGuardCard {
                     SectionHeader(title: "What eGuard sends you")
-                    // Real-time alerts are an entitlement. Say so up front instead of letting the toggle bounce
-                    // back on a 403; turning it off always works, so the toggle itself stays enabled.
-                    let pushLocked = model.entitlements?.hasRealtimeAlerts == false
-                    toggle("Push alerts", detail: pushLocked ? "Not included in your plan" : "Protection changes, device issues, approvals", symbol: "iphone.radiowaves.left.and.right", tint: pushLocked ? EGuardColors.neutral : EGuardColors.primary, value: prefs.notifyPush) { NotificationPrefsPatch(notifyPush: $0) }
+                    // Off and locked on a plan without push, whatever the stored (default on) value says. The prefs
+                    // carry `pushIncluded`; older servers don't, so fall back to the plan's entitlements.
+                    let pushIncluded = prefs.pushIncluded ?? model.entitlements?.hasRealtimeAlerts ?? true
+                    toggle("Push alerts", detail: pushIncluded ? "Protection changes, device issues, approvals" : "Not included in your plan. Alerts still show here and by email.",
+                           symbol: "iphone.radiowaves.left.and.right", tint: pushIncluded ? EGuardColors.primary : EGuardColors.neutral, value: prefs.notifyPush && pushIncluded, enabled: pushIncluded) { NotificationPrefsPatch(notifyPush: $0) }
                     Divider()
                     toggle("Email alerts", detail: "The same alerts by email", symbol: "envelope.fill", tint: EGuardColors.tileTeal, value: prefs.notifyEmail) { NotificationPrefsPatch(notifyEmail: $0) }
                     Divider()
@@ -70,6 +72,11 @@ struct NotificationsView: View {
             await loadStatus()
             await loadPrefs()
         }
+        // Another parent's or the web's change, or a plan change, shows on pull
+        .refreshable {
+            await loadStatus()
+            await loadPrefs()
+        }
     }
 
     private var statusText: String {
@@ -81,13 +88,18 @@ struct NotificationsView: View {
         }
     }
 
-    private func toggle(_ title: String, detail: String, symbol: String, tint: Color, value: Bool, patch: @escaping (Bool) -> NotificationPrefsPatch) -> some View {
+    private func toggle(_ title: String, detail: String, symbol: String, tint: Color, value: Bool, enabled: Bool = true, patch: @escaping (Bool) -> NotificationPrefsPatch) -> some View {
         Toggle(isOn: Binding(
             get: { value },
             set: { newValue in
+                // One change at a time, so answers can't arrive out of order and show an older state
+                guard !isSaving else { return }
+                isSaving = true
                 Task {
+                    defer { isSaving = false }
                     do {
                         state = .loaded(try await model.api.updateNotificationPrefs(patch(newValue)))
+                        errorMessage = nil
                         await model.refreshUser()
                     } catch {
                         errorMessage = error.localizedDescription
@@ -104,6 +116,7 @@ struct NotificationsView: View {
             }
         }
         .tint(EGuardColors.primary)
+        .disabled(!enabled || isSaving)
     }
 
     private func loadPrefs() async {
@@ -125,6 +138,7 @@ struct NotificationsView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         NotificationsView()
@@ -132,3 +146,4 @@ struct NotificationsView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

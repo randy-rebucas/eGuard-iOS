@@ -110,8 +110,10 @@ struct TwoFactorCodeView: View {
     @State private var errorMessage: String?
     @State private var isSubmitting = false
     @State private var recoveryNotice: String?
+    /// The server's reason the challenge ended (expired, or out of tries). Shown here: popping would hide it.
+    @State private var endedMessage: String?
 
-    private var isExpired: Bool { challenge.expiresAt <= .now }
+    private var isExpired: Bool { endedMessage != nil || challenge.expiresAt <= .now }
 
     var body: some View {
         EGuardScreen {
@@ -121,7 +123,7 @@ struct TwoFactorCodeView: View {
             )
             EGuardTextField(
                 label: usesRecoveryCode ? "Recovery code" : "Authenticator code",
-                placeholder: usesRecoveryCode ? "abcd1234" : "123456",
+                placeholder: usesRecoveryCode ? "abcd-efgh-jkmn" : "123456",
                 text: $code,
                 symbolName: "lock.shield",
                 contentType: .oneTimeCode,
@@ -130,7 +132,7 @@ struct TwoFactorCodeView: View {
             )
             InlineError(message: errorMessage)
             if isExpired {
-                ErrorCard(message: "This sign-in expired. Go back and sign in again.") { router.pop() }
+                ErrorCard(message: endedMessage ?? "This sign-in expired. Go back and sign in again.") { router.pop() }
             }
             Button(usesRecoveryCode ? "Use an authenticator code instead" : "Use a recovery code") {
                 usesRecoveryCode.toggle()
@@ -165,8 +167,8 @@ struct TwoFactorCodeView: View {
                 finish()
             }
         } catch let error as APIError where error.code == "challenge_expired" {
-            errorMessage = error.localizedDescription
-            router.pop()
+            errorMessage = nil
+            endedMessage = error.localizedDescription
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -301,6 +303,7 @@ struct AcceptInviteView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         ForgotPasswordView()
@@ -308,3 +311,4 @@ struct AcceptInviteView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

@@ -33,6 +33,7 @@ struct MainTabView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         MainTabView()
@@ -40,3 +41,4 @@ struct MainTabView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

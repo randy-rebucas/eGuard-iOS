@@ -170,7 +170,9 @@ struct LocationView: View {
             .clipShape(EGuardShapes.card)
             .overlay(alignment: .center) {
                 if response.current == nil {
-                    Text("Waiting for the first location…")
+                    // As the web: name the device when none has said yet whether it shares
+                    Text(response.waitingForReport.map { "Waiting for \($0.deviceName) to report whether location sharing is on." } ?? "Waiting for the first location…")
+                        .multilineTextAlignment(.center)
                         .font(EGuardTypography.caption)
                         .padding(EGuardSpacing.sm)
                         .background(.regularMaterial, in: EGuardShapes.button)
@@ -193,6 +195,14 @@ struct LocationView: View {
                     Text(response.current?.freshnessLabel ?? "No location yet")
                         .font(EGuardTypography.caption)
                         .foregroundStyle(EGuardColors.textSecondary)
+                    // From an iPhone or iPad: the location updates only while eGuard is open there
+                    if let note = response.note, !note.isEmpty {
+                        Label(note, systemImage: "info.circle")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                            .padding(.top, EGuardSpacing.xxs)
+                            .accessibilityIdentifier("location.note")
+                    }
                 }
                 Spacer()
                 if let current = response.current, current.placeId == nil, canAddPlaces {
@@ -207,7 +217,8 @@ struct LocationView: View {
 
     private func visitsCard(_ response: LocationResponse) -> some View {
         VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
-            SectionHeader(title: "Today", actionTitle: response.history.enabled ? "View All" : nil) { isShowingAllVisits = true }
+            // Today's and yesterday's visits (a stay begun earlier counts), so not "Today"
+            SectionHeader(title: "Recent places", actionTitle: response.history.enabled ? "View All" : nil) { isShowingAllVisits = true }
             EGuardCard {
                 if !response.history.enabled {
                     Label("Location history is off", systemImage: "clock.arrow.circlepath")
@@ -220,12 +231,13 @@ struct LocationView: View {
                             .buttonStyle(.eGuardSecondary)
                     }
                 } else if response.history.visits.isEmpty {
-                    Text("No places recorded yet today.")
+                    Text("No places recorded today or yesterday.")
                         .font(EGuardTypography.callout)
                         .foregroundStyle(EGuardColors.textSecondary)
                 } else {
+                    let severalDays = Set(response.history.visits.map(\.day.key)).count > 1
                     ForEach(response.history.visits) { visit in
-                        VisitRow(visit: visit)
+                        VisitRow(visit: visit, showDay: severalDays)
                             .contextMenu {
                                 if visit.canBeNamed, canAddPlaces {
                                     Button("Name this place", systemImage: "mappin.and.ellipse") {
@@ -273,7 +285,8 @@ struct LocationView: View {
                         }
                         Spacer()
                         Menu {
-                            if canAddPlaces {
+                            // The 30-place cap gates adding only; a saved place can still be changed unless the plan refuses
+                            if !placesPlanLocked {
                                 Button("Edit", systemImage: "pencil") { placeEditor = .edit(place) }
                             }
                             Button("Remove", systemImage: "trash", role: .destructive) { placeToRemove = place }
@@ -312,7 +325,10 @@ struct LocationView: View {
 /// One visit: a stay at a place, or a fix taken while passing by. Numbered on a day's route.
 struct VisitRow: View {
     let visit: Visit
+    /// On a day's route: the stay's position, drawn in a numbered circle. Passing-by fixes get none.
     var number: Int? = nil
+    /// In a list covering more than one day without day headers: say which day.
+    var showDay = false
 
     var body: some View {
         HStack(spacing: EGuardSpacing.sm) {
@@ -332,17 +348,14 @@ struct VisitRow: View {
                 IconTile(symbolName: "mappin.circle.fill", tint: EGuardColors.success)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(visit.displayLabel)
+                Text(visit.title)
                     .font(EGuardTypography.label)
                     .foregroundStyle(visit.isPassingBy ? EGuardColors.textSecondary : EGuardColors.textPrimary)
-                Text(visit.spanLabel ?? visit.deviceName)
+                Text(showDay ? "\(visit.day.label), \(visit.detail)" : visit.detail)
                     .font(EGuardTypography.caption)
                     .foregroundStyle(EGuardColors.textSecondary)
             }
             Spacer()
-            Text(visit.timeLabel)
-                .font(EGuardTypography.caption)
-                .foregroundStyle(EGuardColors.textSecondary)
         }
         .padding(.vertical, EGuardSpacing.xxs)
         .accessibilityElement(children: .combine)
@@ -371,6 +384,8 @@ struct VisitsHistoryView: View {
     @State private var thinned = false
     @State private var error: String?
     @State private var isLoading = true
+    @State private var isLoadingMore = false
+    @State private var loadMoreError: String?
 
     private var groups: [(DayGroup, [Visit])] {
         var order: [DayGroup] = []
@@ -435,8 +450,10 @@ struct VisitsHistoryView: View {
                         }
                     }
                     if nextBefore != nil {
-                        Button("Load more") { Task { await loadPage(reset: false) } }
+                        Button(isLoadingMore ? "Loading…" : "Load more") { Task { await loadPage(reset: false) } }
                             .buttonStyle(.eGuardSecondary)
+                            .disabled(isLoadingMore)
+                        InlineError(message: loadMoreError)
                     }
                     if let retentionDays {
                         Text("Visits are kept for \(retentionDays) days.")
@@ -457,11 +474,22 @@ struct VisitsHistoryView: View {
         }
     }
 
-    /// Calendar day as the API wants it, `YYYY-MM-DD`.
-    private var dayKey: String { day.formatted(.iso8601.year().month().day()) }
+    /// Calendar day as the API wants it, `YYYY-MM-DD`, in the phone's time zone (a stand-in for the family's)
+    /// rather than UTC: late in the evening those differ.
+    private var dayKey: String {
+        let parts = Calendar.current.dateComponents([.year, .month, .day], from: day)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
+    }
 
     private func loadPage(reset: Bool) async {
+        // One page at a time: a second tap mustn't append the same page twice
+        if !reset {
+            guard !isLoadingMore else { return }
+            isLoadingMore = true
+        }
         isLoading = reset
+        loadMoreError = nil
+        defer { isLoadingMore = false }
         do {
             let page: VisitsPage
             switch mode {
@@ -475,7 +503,8 @@ struct VisitsHistoryView: View {
             nextBefore = page.nextBefore
             error = nil
         } catch {
-            self.error = error.localizedDescription
+            // A failed "Load more" keeps what's shown
+            if reset { self.error = error.localizedDescription } else { loadMoreError = error.localizedDescription }
         }
         isLoading = false
     }
@@ -650,7 +679,8 @@ struct PlaceEditorSheet: View {
             onSaved()
             dismiss()
         } catch let error as APIError where error.code == "plan_required" {
-            self.error = APIClient.storeSafeMessage(error.localizedDescription, status: 403)
+            // The server's words may sell the upgrade; App Store rules want them neutral here
+            self.error = APIClient.storeSafeMessage(error.localizedDescription, status: 403, code: "plan_required")
             onPlanLocked?()
         } catch {
             self.error = error.localizedDescription
@@ -658,6 +688,7 @@ struct PlaceEditorSheet: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         LocationView(childId: "child_1")
@@ -665,3 +696,4 @@ struct PlaceEditorSheet: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

@@ -23,16 +23,13 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
             )
             return
         }
-        switch activity {
-        case EGuardShared.Activity.dailyLimits:
-            // A new day begins: yesterday's used-up allowances are released.
+        guard activity == EGuardShared.Activity.dailyLimits || EGuardShared.Activity.isScreenTime(activity) else { return }
+        // A new day begins: yesterday's used-up allowances are released. An interval restarting the same day keeps
+        // them, or a restart would hand out a new allowance (a real limit change clears `shieldedOn` in the app).
+        if EGuardShared.sharedDefaults?.string(forKey: EGuardShared.DefaultsKey.shieldedOn) != Self.today() {
             limitsStore.clearAllSettings()
-        case EGuardShared.Activity.screenTime:
-            limitsStore.clearAllSettings()
-            recordUsage(minutes: 0)
-        default:
-            break
         }
+        if EGuardShared.Activity.isScreenTime(activity) { recordUsage(minutes: 0) }
     }
 
     override func intervalDidEnd(for activity: DeviceActivityName) {
@@ -42,12 +39,8 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
             downtimeStore.clearAllSettings()
             return
         }
-        switch activity {
-        case EGuardShared.Activity.dailyLimits, EGuardShared.Activity.screenTime:
-            limitsStore.clearAllSettings()
-        default:
-            break
-        }
+        // Limits are released when the next day's interval starts, not here: an interval also ends when the app
+        // re-registers the schedule, which mustn't lift a limit reached today.
     }
 
     override func eventDidReachThreshold(_ event: DeviceActivityEvent.Name, activity: DeviceActivityName) {
@@ -71,8 +64,12 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
         case EGuardShared.Event.screenTime:
             key = EGuardShared.DefaultsKey.screenTimeSelection
             title = "Screen time limit reached"
-            recordLimitReached()
-            recordUsage(minutes: EGuardShared.sharedDefaults?.integer(forKey: EGuardShared.DefaultsKey.screenTimeMinutes) ?? 0)
+            // This day's limit: per-day schedules each carry their own
+            let threshold = DeviceActivityCenter().events(for: activity)[event]?.threshold
+            let minutes = threshold.map { ($0.hour ?? 0) * 60 + ($0.minute ?? 0) }
+                ?? EGuardShared.sharedDefaults?.integer(forKey: EGuardShared.DefaultsKey.screenTimeMinutes) ?? 0
+            recordLimitReached(minutes: minutes)
+            recordUsage(minutes: minutes)
         default:
             return
         }
@@ -82,6 +79,7 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
             return
         }
         shield(selection)
+        EGuardShared.sharedDefaults?.set(Self.today(), forKey: EGuardShared.DefaultsKey.shieldedOn)
         notify(
             identifier: "limit.\(event.rawValue)",
             title: title,
@@ -128,9 +126,8 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
 
     /// Queues a `LIMIT_REACHED` event for the app to send to the eGuard server on its next sync.
     /// The extension itself never talks to the network.
-    private func recordLimitReached() {
+    private func recordLimitReached(minutes: Int) {
         guard let defaults = EGuardShared.sharedDefaults else { return }
-        let minutes = defaults.integer(forKey: EGuardShared.DefaultsKey.screenTimeMinutes)
         var pending = (try? JSONSerialization.jsonObject(with: defaults.data(forKey: EGuardShared.DefaultsKey.pendingEvents) ?? Data("[]".utf8))) as? [[String: Any]] ?? []
         pending.append(["type": "LIMIT_REACHED", "minutes": minutes, "eventId": UUID().uuidString])
         if let data = try? JSONSerialization.data(withJSONObject: pending) {
@@ -142,12 +139,27 @@ class DeviceActivityMonitorExtension: DeviceActivityMonitor {
     /// within a day; a new day's interval start resets it to zero.
     private func recordUsage(minutes: Int) {
         guard let defaults = EGuardShared.sharedDefaults else { return }
-        let parts = Calendar.current.dateComponents([.year, .month, .day], from: Date())
-        let today = String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+        let today = Self.today()
         let sameDay = defaults.string(forKey: EGuardShared.DefaultsKey.usageDate) == today
         let previous = sameDay ? defaults.integer(forKey: EGuardShared.DefaultsKey.usageMinutes) : 0
+        let total = minutes == 0 && !sameDay ? 0 : max(previous, minutes)
         defaults.set(today, forKey: EGuardShared.DefaultsKey.usageDate)
-        defaults.set(minutes == 0 && !sameDay ? 0 : max(previous, minutes), forKey: EGuardShared.DefaultsKey.usageMinutes)
+        defaults.set(total, forKey: EGuardShared.DefaultsKey.usageMinutes)
+        // Each day's total too (last 30), so days the app wasn't opened on still reach the parent
+        var byDate = (defaults.data(forKey: EGuardShared.DefaultsKey.usageByDate))
+            .flatMap { try? JSONDecoder().decode([String: Int].self, from: $0) } ?? [:]
+        byDate[today] = max(byDate[today] ?? 0, total)
+        let kept = byDate.keys.sorted().suffix(30)
+        byDate = byDate.filter { kept.contains($0.key) }
+        if let data = try? JSONEncoder().encode(byDate) {
+            defaults.set(data, forKey: EGuardShared.DefaultsKey.usageByDate)
+        }
+    }
+
+    /// The device's local `YYYY-MM-DD`, what `/usage` and the shield bookkeeping use.
+    private static func today() -> String {
+        let parts = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
     }
 
     /// Posts a local notification if the parent allowed them. Content never includes app names.

@@ -32,6 +32,8 @@ nonisolated struct DeviceStatus: Encodable, Sendable {
     var battery: Int?
     var osVersion: String?
     var appVersion: String?
+    /// FCM token for the server's silent "sync now" push (`data.type == "sync"`). Left out (nil) without push.
+    var pushToken: String?
 }
 
 /// One of the child's current settings. This is what the device enforces, including offline.
@@ -63,6 +65,8 @@ nonisolated struct SyncFeatures: Codable, Equatable, Sendable {
 
 nonisolated struct SyncResponse: Codable, Equatable, Sendable {
     var deviceId: String
+    /// Whose device this is now: a parent can rename the child or move the device. Nil from older servers.
+    var childName: String? = nil
     var policy: [PolicyEntry]
     var requests: [DeviceRequest]
     var apps: [AppRule]
@@ -79,6 +83,8 @@ nonisolated struct SyncResponse: Codable, Equatable, Sendable {
 nonisolated struct ReportEntry: Codable, Equatable, Identifiable, Sendable {
     var key: String
     var config: JSONValue
+    /// Why applying it failed on this device, shown to the parent; nil (left out) when it applied.
+    var error: String? = nil
 
     var id: String { key }
 }
@@ -119,6 +125,9 @@ nonisolated struct LocationFix: Codable, Equatable, Sendable {
     var lng: Double
     var accuracyM: Double?
     var placeLabel: String?
+    /// When Core Location took the fix (`CLLocation.timestamp`): a cached fix can be older than the request,
+    /// and the parent sees this time.
+    var at: Date?
 }
 
 nonisolated enum DeviceEventType: String, Codable, Sendable {

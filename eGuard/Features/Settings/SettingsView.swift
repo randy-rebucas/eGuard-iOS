@@ -8,6 +8,9 @@ struct SettingsView: View {
     @Environment(AppRouter.self) private var router
     @State private var isConfirmingSignOut = false
 
+    private static let shareURL = URL(string: "https://www.eguard.family/")!
+    private static let shareText = "I use eGuard to help keep my kids safe on their phones: screen time, bedtime, app and website rules, and location, each one checked on the device. It's free to start."
+
     private var version: String {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
         return "Version \(short)"
@@ -109,6 +112,14 @@ struct SettingsView: View {
                 router.push(.helpSupport)
             }
             Divider()
+            // The system share sheet (Messages, Messenger, Viber…), worded as the web's Settings › Share eGuard
+            // (src/lib/share.ts). Only the public site, nothing about the family.
+            ShareLink(item: Self.shareURL, subject: Text("eGuard parental controls"), message: Text(Self.shareText)) {
+                EGuardNavRow(title: "Share eGuard", subtitle: "Tell another parent about eGuard", symbolName: "square.and.arrow.up.fill", tint: EGuardColors.tilePurple)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("settings.share")
+            Divider()
             EGuardNavRow(title: "About eGuard", subtitle: version, symbolName: "info.circle.fill", tint: EGuardColors.tileGray) {
                 router.push(.about)
             }
@@ -138,6 +149,7 @@ struct SettingsView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         SettingsView(isRoot: true)
@@ -145,3 +157,4 @@ struct SettingsView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

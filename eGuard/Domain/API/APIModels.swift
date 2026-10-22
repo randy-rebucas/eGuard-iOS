@@ -70,6 +70,9 @@ nonisolated struct NotificationPrefs: Codable, Equatable, Sendable {
     var notifyEmail: Bool
     var notifyApproval: Bool
     var weeklySummary: Bool
+    /// Whether the plan sends push alerts at all. `notifyPush` is on by default, Free included, so without this the
+    /// switch would read "on" for a plan that never pushes. nil from older servers.
+    var pushIncluded: Bool?
 }
 
 /// Fields to change; `nil` means leave as is.
@@ -119,6 +122,22 @@ nonisolated struct TwoFactorChallenge: Codable, Hashable, Sendable {
     var isNew: Bool?
 }
 
+/// `POST /auth/register` (202): the code is on its way, and no account exists yet. `signup` is the ticket that goes
+/// with the code; it lives only in memory (15 minutes). The answer is the same whether or not the email has an account.
+nonisolated struct SignupStarted: Codable, Hashable, Sendable {
+    var verificationRequired: Bool?
+    var signup: String
+    var email: String
+    var expiresAt: Date
+}
+
+/// `POST /auth/register/resend`: a new code was emailed and the previous one stopped working.
+nonisolated struct SignupCodeSent: Codable, Equatable, Sendable {
+    var ok: Bool?
+    var email: String
+    var expiresAt: Date
+}
+
 /// The two shapes a sign-in call can answer with.
 nonisolated enum LoginResult: Decodable, Equatable, Sendable {
     case signedIn(AuthResponse)
@@ -165,7 +184,8 @@ nonisolated struct VerificationSend: Codable, Sendable {
 
 nonisolated struct SessionInfo: Codable, Equatable, Identifiable, Sendable {
     var id: String
-    var userAgent: String
+    /// null on the server when the client sent none: one such session must not fail the whole list.
+    var userAgent: String?
     var createdAt: Date
     var lastSeenAt: Date?
     var current: Bool
@@ -295,13 +315,13 @@ nonisolated struct HealthScore: Codable, Equatable, Sendable {
     var offlineCount: Int { offline ?? 0 }
     var isVerified: Bool { verified ?? (total > 0 && score >= total && offlineCount == 0) }
 
-    /// The spec's grade thresholds, used when `label` is absent.
+    /// The server's `healthLabel` thresholds, used when `label` is absent.
     var grade: String {
         if let label { return label }
         if total == 0 { return "No devices yet" }
         if score >= total { return offlineCount > 0 ? "Last known: all set" : "Fully protected" }
-        if score >= 8 { return "Good protection" }
-        if score >= 5 { return "Needs attention" }
+        if score >= total - 2 { return "Good protection" }
+        if Double(score) >= Double(total) / 2 { return "Needs attention" }
         return "Action required"
     }
 
@@ -347,9 +367,14 @@ nonisolated struct ChildSummary: Codable, Equatable, Identifiable, Sendable {
     var weekendLimitMinutes: Int?
     var todayLimitMinutes: Int?
     var todayMinutes: Int?
+    /// Phones and tablets paired.
     var deviceCount: Int
+    /// Connected browser extensions (absent on older servers).
+    var browserCount: Int? = nil
     var primaryDevice: PrimaryDevice?
 
+    /// No phone or tablet to verify, but a browser is connected: "Browser only", as on the web.
+    var isBrowserOnly: Bool { deviceCount == 0 && (browserCount ?? 0) > 0 }
     var ageDescription: String { "\(age) years old" }
     var deviceName: String { primaryDevice?.name ?? "\(name)'s device" }
 }
@@ -386,15 +411,16 @@ nonisolated struct APIDevice: Codable, Equatable, Identifiable, Sendable {
     var lastSeenLabel: String?
     var state: DeviceState
     var issues: Int
-    /// True until the device's first report. Show "Waiting for first check" instead of the issue count.
+    /// Just paired or moved, nothing reported yet: `issues` counts every protection, so say "Waiting for first check".
     var firstCheck: Bool? = nil
 
     var symbolName: String { kind == "TABLET" ? "ipad" : "iphone" }
     var isAwaitingFirstCheck: Bool { firstCheck ?? false }
 
-    /// The status pill text: the issue count, the state, or the first-check wait.
-    var statusText: String {
-        if isAwaitingFirstCheck && state != .offline { return "Waiting for first check" }
+    /// The pill's words, as the web's device card: offline first, then waiting, then issues.
+    var statusTitle: String {
+        if state == .offline { return state.title }
+        if isAwaitingFirstCheck { return "Waiting for first check" }
         return issues > 0 ? "\(issues) issue\(issues == 1 ? "" : "s")" : state.title
     }
 }
@@ -402,6 +428,8 @@ nonisolated struct APIDevice: Codable, Equatable, Identifiable, Sendable {
 nonisolated struct DevicesResponse: Codable, Sendable {
     var devices: [APIDevice]
     var limit: Int?
+    /// Slots the limit counts (these devices plus connected browsers), as pairing counts them. Nil from older servers.
+    var used: Int? = nil
 }
 
 nonisolated struct DeviceProtectionStatus: Codable, Equatable, Identifiable, Sendable {
@@ -416,6 +444,9 @@ nonisolated struct DeviceProtectionStatus: Codable, Equatable, Identifiable, Sen
     var lastVerifiedAt: Date?
 
     var id: String { key }
+    /// The status as the parent reads it: "Set by you" or "Not set up yet" for a PARENT_SET protection.
+    var statusTitle: String { capability.statusTitle(status) }
+    var displayStatus: HealthStatus { capability.healthStatus(status) }
 }
 
 nonisolated struct DeviceDetail: Codable, Equatable, Sendable {
@@ -473,7 +504,8 @@ nonisolated struct CheckStarted: Codable, Sendable {
 nonisolated struct PairingCode: Codable, Equatable, Sendable {
     var code: String
     var expiresAt: Date
-    /// Count down from this, measured from when the response arrived: the phone's clock may be off.
+    /// How long the code lasts from when the response arrived. Count down from this, not `expiresAt`: the phone's
+    /// clock may be off.
     var expiresInSeconds: Int? = nil
     var childName: String
     /// `"BROWSER"` for an eGuard browser extension code; nil or `"DEVICE"` for the phone app.
@@ -489,7 +521,7 @@ nonisolated struct PhotoUploadResponse: Codable, Sendable {
     var photoUrl: String
 }
 
-/// An eGuard browser extension install, from `GET /browsers`. Browsers never enforce a policy yet.
+/// An eGuard browser extension install, from `GET /browsers`.
 nonisolated struct ConnectedBrowser: Codable, Equatable, Identifiable, Sendable {
     var id: String
     var childId: String
@@ -509,7 +541,9 @@ nonisolated struct ConnectedBrowser: Codable, Equatable, Identifiable, Sendable 
     var offline: Bool? = nil
 
     var detail: String {
-        [browser, platform].compactMap { $0 }.joined(separator: " · ")
+        // Major version only, as the web card shows it
+        let name = [browser, browserVersion?.split(separator: ".").first.map(String.init)].compactMap { $0 }.joined(separator: " ")
+        return [name.isEmpty ? nil : name, extensionVersion.map { "eGuard \($0)" }].compactMap { $0 }.joined(separator: " · ")
     }
 
     var isOffline: Bool { offline ?? false }
@@ -620,11 +654,22 @@ nonisolated struct BrowserCategory: Codable, Equatable, Identifiable, Sendable {
     var id: String { key }
 }
 
+/// A YouTube Restricted Mode level with the web's label and description.
+nonisolated struct BrowserYoutubeLevel: Codable, Equatable, Identifiable, Sendable {
+    var key: String
+    var label: String
+    var text: String?
+
+    var id: String { key }
+}
+
 /// The policy every eGuard browser extension of a child follows, from `GET /children/{id}/browser-policy`.
 nonisolated struct BrowserPolicy: Codable, Equatable, Sendable {
     var version: Int
     var safeBrowsing: Bool
     var safeSearch: Bool
+    /// YouTube Restricted Mode: `OFF`, `MODERATE` or `STRICT`; nil from servers that don't have it.
+    var youtubeRestrict: String? = nil
     var blockedCategories: [String]
     var blockedDomains: [String]
     var allowedDomains: [String]
@@ -633,13 +678,14 @@ nonisolated struct BrowserPolicy: Codable, Equatable, Sendable {
     var updatedBy: String?
     var updatedAt: Date?
     var categories: [BrowserCategory]?
+    var youtubeLevels: [BrowserYoutubeLevel]? = nil
 
     /// The body for `PUT`, with `baseVersion` so a concurrent edit is refused instead of undone.
     var update: BrowserPolicyUpdate {
         BrowserPolicyUpdate(
             safeBrowsing: safeBrowsing, safeSearch: safeSearch, blockedCategories: blockedCategories,
             blockedDomains: blockedDomains, allowedDomains: allowedDomains, unknownSitesPolicy: unknownSitesPolicy,
-            schedule: schedule, baseVersion: version
+            schedule: schedule, baseVersion: version, youtubeRestrict: youtubeRestrict
         )
     }
 }
@@ -653,15 +699,18 @@ nonisolated struct BrowserPolicyUpdate: Encodable, Equatable, Sendable {
     var unknownSitesPolicy: String
     var schedule: BrowserSchedule?
     var baseVersion: Int?
+    /// Left out when nil: the server keeps the saved level.
+    var youtubeRestrict: String? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case safeBrowsing, safeSearch, blockedCategories, blockedDomains, allowedDomains, unknownSitesPolicy, schedule, baseVersion
+        case safeBrowsing, safeSearch, youtubeRestrict, blockedCategories, blockedDomains, allowedDomains, unknownSitesPolicy, schedule, baseVersion
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(safeBrowsing, forKey: .safeBrowsing)
         try container.encode(safeSearch, forKey: .safeSearch)
+        try container.encodeIfPresent(youtubeRestrict, forKey: .youtubeRestrict)
         try container.encode(blockedCategories, forKey: .blockedCategories)
         try container.encode(blockedDomains, forKey: .blockedDomains)
         try container.encode(allowedDomains, forKey: .allowedDomains)
@@ -720,8 +769,14 @@ nonisolated struct HealthCheck: Codable, Equatable, Identifiable, Sendable {
     var detail: String?
     var fixDeviceId: String?
     var fixChildId: String?
+    /// True when the status is UNSUPPORTED only because the parent set it on the device (PARENT_SET): "Set by you".
+    /// Absent on older servers.
+    var parentSet: Bool? = nil
 
     var id: String { key }
+    var isParentSet: Bool { parentSet == true }
+    /// The status as the parent reads it, "Set by you" included.
+    var displayStatus: HealthStatus { isParentSet ? .setByYou : status.healthStatus }
 }
 
 nonisolated struct FixItem: Codable, Equatable, Identifiable, Sendable {
@@ -777,15 +832,15 @@ nonisolated struct Dashboard: Codable, Equatable, Sendable {
     var summary: String
     var health: HealthScore
     var children: [ChildSummary]
-    /// Phones and tablets only.
+    /// Phones and tablets.
     var deviceCount: Int
-    /// Connected browser extensions. Each takes a plan slot, like a device.
+    /// Connected browser extensions (absent on older servers). Each takes a device slot, like a phone.
     var browserCount: Int? = nil
     var recentAlerts: [APIAlert]
     var unreadAlerts: Int
 
-    /// What the Devices card shows: phones, tablets and browsers together.
-    var slotsUsed: Int { deviceCount + (browserCount ?? 0) }
+    /// What the web's Devices card counts: phones, tablets and browsers.
+    var connectedDevices: Int { deviceCount + (browserCount ?? 0) }
 }
 
 // MARK: - Onboarding
@@ -806,6 +861,9 @@ nonisolated enum Capability: String, Codable, Sendable {
     case available = "AVAILABLE"
     case guided = "GUIDED"
     case verifyOnly = "VERIFY_ONLY"
+    /// The parent sets it in another app on the device (Google Play's ratings on Android) and confirms. eGuard can't
+    /// read it back: once confirmed the device's row is UNSUPPORTED, shown as "Set by you", not verified.
+    case parentSet = "PARENT_SET"
     case unsupported = "UNSUPPORTED"
 
     init(from decoder: Decoder) throws { self = try decodeLenient(decoder, fallback: .verifyOnly) }
@@ -815,6 +873,7 @@ nonisolated enum Capability: String, Codable, Sendable {
         case .available: "Available"
         case .guided: "Guided"
         case .verifyOnly: "Verify only"
+        case .parentSet: "Set by you"
         case .unsupported: "Not supported"
         }
     }
@@ -823,10 +882,25 @@ nonisolated enum Capability: String, Codable, Sendable {
     var mode: ConfigurationMode {
         switch self {
         case .available: .automatic
-        case .guided: .guided
+        case .guided, .parentSet: .guided
         case .verifyOnly: .verificationOnly
         case .unsupported: .unsupported
         }
+    }
+
+    /// The parent follows steps on the device and confirms them ("I've done these steps").
+    var isGuided: Bool { self == .guided || self == .verifyOnly || self == .parentSet }
+
+    /// A device's status for a protection with this capability, as the parent reads it: a PARENT_SET protection is
+    /// "Set by you" once confirmed (the server stores it as UNSUPPORTED) and "Not set up yet" before.
+    func statusTitle(_ status: CheckStatus) -> String {
+        guard self == .parentSet else { return status.title }
+        return status == .unsupported ? HealthStatus.setByYou.title : "Not set up yet"
+    }
+
+    /// The design system's status for a device row with this capability.
+    func healthStatus(_ status: CheckStatus) -> HealthStatus {
+        self == .parentSet && status == .unsupported ? .setByYou : status.healthStatus
     }
 }
 
@@ -940,9 +1014,15 @@ nonisolated struct BatchDevice: Codable, Equatable, Identifiable, Sendable {
     var offline: Bool
     var from: String?
     var guide: [String]?
+    /// The protection is PARENT_SET on this device: VERIFIED means the parent said they set it, not that the device
+    /// checked it. Absent on older servers.
+    var parentSet: Bool? = nil
 
     var id: String { requestId }
     var isGuided: Bool { mode == "GUIDED" }
+    var isParentSet: Bool { parentSet == true }
+    /// The status in words: a confirmed PARENT_SET step is "Set by you, not verified", never "Verified".
+    var statusTitle: String { isParentSet && status == .verified ? "Set by you, not verified" : status.title }
 }
 
 nonisolated struct BatchItem: Codable, Equatable, Identifiable, Sendable {
@@ -957,15 +1037,30 @@ nonisolated struct BatchItem: Codable, Equatable, Identifiable, Sendable {
     var guide: [String]? { devices.first { $0.guide?.isEmpty == false }?.guide }
     var failureReason: String? { devices.compactMap(\.failureReason).first }
     var isOffline: Bool { devices.contains { $0.offline && !$0.status.isFinished } }
+    /// Every device's step is PARENT_SET: confirming saves it as set by the parent, nothing is verified.
+    var isParentSetOnly: Bool { !devices.isEmpty && devices.allSatisfy(\.isParentSet) }
+    /// The status in words: "Set by you, not verified" rather than "Verified" for a PARENT_SET step.
+    var statusTitle: String { isParentSetOnly && status == .verified ? "Set by you, not verified" : status.title }
 }
 
 nonisolated struct BatchSummary: Codable, Equatable, Sendable {
     var total: Int
+    /// Done: checked by a device, or set by the parent (`setByYou` is part of it).
     var verified: Int
+    /// Of `verified`, the PARENT_SET items the parent confirmed: done, but not checked by a device. Absent on older servers.
+    var setByYou: Int?
     var failed: Int
     var awaitingParent: Int
     var inProgress: Int
     var cancelled: Int
+
+    var setByYouCount: Int { setByYou ?? 0 }
+
+    /// "3 of 10 done", plus "· 2 set by you" when some were set by the parent. Not "verified": those weren't checked.
+    var progressText: String {
+        let done = "\(verified) of \(total) done"
+        return setByYouCount > 0 ? "\(done) · \(setByYouCount) set by you" : done
+    }
 }
 
 nonisolated struct Batch: Codable, Equatable, Sendable {
@@ -1111,6 +1206,9 @@ nonisolated struct ProtectionDevice: Codable, Equatable, Identifiable, Sendable 
     var guide: [String]?
 
     var id: String { deviceId }
+    /// The status as the parent reads it: "Set by you" or "Not set up yet" for a PARENT_SET protection.
+    var statusTitle: String { capability.statusTitle(status) }
+    var displayStatus: HealthStatus { capability.healthStatus(status) }
 }
 
 nonisolated struct Protection: Codable, Equatable, Identifiable, Sendable {
@@ -1122,7 +1220,7 @@ nonisolated struct Protection: Codable, Equatable, Identifiable, Sendable {
     var policyLabel: String
     var status: CheckStatus
     var openBatchId: String?
-    /// Send back as `baseVersion` on `PUT`, so another parent's change isn't silently replaced.
+    /// Sent back as `baseVersion` when saving, so a change another parent made or queued since is refused (`409 stale`).
     var version: String? = nil
     var devices: [ProtectionDevice]
 
@@ -1132,6 +1230,14 @@ nonisolated struct Protection: Codable, Equatable, Identifiable, Sendable {
     var isUnsupportedEverywhere: Bool {
         !devices.isEmpty && devices.allSatisfy { $0.capability == .unsupported }
     }
+
+    /// UNSUPPORTED only because the parent set it on a device (PARENT_SET), as the server's health check says
+    /// "Set by you" rather than "Not supported".
+    var isParentSet: Bool {
+        status == .unsupported && devices.contains { $0.capability == .parentSet && $0.status == .unsupported }
+    }
+
+    var displayStatus: HealthStatus { isParentSet ? .setByYou : status.healthStatus }
 }
 
 nonisolated struct ProtectionsResponse: Codable, Sendable {
@@ -1174,12 +1280,43 @@ nonisolated struct AppUsage: Codable, Equatable, Identifiable, Sendable {
     var id: String { appId ?? name }
 }
 
+/// `GET /children/{id}/extra-time`: running extra time (`until`, nil when none) and the child's open request for more.
+nonisolated struct ExtraTime: Codable, Equatable, Sendable {
+    nonisolated struct Request: Codable, Equatable, Sendable {
+        var body: String
+        var askedAt: Date
+    }
+
+    var until: Date?
+    var request: Request?
+    /// Minutes a parent can give at once.
+    var choices: [Int]
+
+    /// Extra time that hasn't ended yet (the server sends `until` only while it runs, but the screen can sit open).
+    func isRunning(now: Date = .now) -> Bool { until.map { $0 > now } ?? false }
+}
+
+/// `POST /children/{id}/extra-time`. `addedMinutes` can be less than asked: extra time never runs more than 4 hours
+/// ahead (absent on older servers).
+nonisolated struct ExtraTimeGrant: Codable, Equatable, Sendable {
+    var until: Date
+    var addedMinutes: Int?
+}
+
+/// Tabs the plan doesn't include (`["30d"]`) and what to say about them.
+nonisolated struct ScreenTimeLock: Codable, Equatable, Sendable {
+    var periods: [String]
+    var message: String
+}
+
 nonisolated struct ScreenTimeReport: Codable, Equatable, Sendable {
     var period: String
     var from: String
     var to: String
     var totalMinutes: Int
+    /// Over complete days only (today is still in progress); for `today`, today's total.
     var averageMinutes: Int
+    /// nil for `today`: nothing complete to compare.
     var previousAverageMinutes: Int?
     var limitMinutes: Int?
     var days: [DayMinutes]
@@ -1187,8 +1324,32 @@ nonisolated struct ScreenTimeReport: Codable, Equatable, Sendable {
     var apps: [AppUsage]
     /// Apps left unnamed because of the plan's `appMonitoringLimit`; 0 or absent otherwise.
     var hiddenApps: Int?
+    var completeDays: Int?
+    /// Phones and tablets paired to the child (browsers don't send screen time). nil from older servers.
+    var deviceCount: Int?
+    /// Sent with every period, so the 30-day tab is locked before it's tapped.
+    var locked: ScreenTimeLock?
 
     var hiddenAppCount: Int { hiddenApps ?? 0 }
+
+    /// A `YYYY-MM-DD` day from the server: a calendar day in the family's time zone. Parsed at UTC midnight with a
+    /// fixed calendar, so neither the phone's time zone nor a Buddhist or Japanese calendar moves it; format it in UTC.
+    static func day(_ key: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: key)
+    }
+
+    /// "Oct 7 – Oct 13" for a multi-day report, nil for one day.
+    var rangeLabel: String? {
+        guard from != to, let start = Self.day(from), let end = Self.day(to) else { return nil }
+        var style = Date.FormatStyle.dateTime.month(.abbreviated).day()
+        style.timeZone = TimeZone(identifier: "UTC")!
+        return "\(start.formatted(style)) – \(end.formatted(style))"
+    }
 
     /// "↓ 12% vs last week"-style change, or nil when there is nothing to compare.
     var changePercent: Int? {
@@ -1212,7 +1373,7 @@ nonisolated enum AppApproval: String, Codable, Sendable {
         switch self {
         case .allowed: "Allowed"
         case .alwaysAllowed: "Always allowed"
-        case .filtered: "Filtered"
+        case .filtered: "Filtered (blocked)"
         case .blocked: "Blocked"
         case .pending: "Ask parent"
         }
@@ -1275,13 +1436,17 @@ nonisolated struct ChildApp: Codable, Equatable, Identifiable, Sendable {
     /// Show Approve and Decline while this is true, even for an app that is already blocked.
     var isRequested: Bool { requested ?? (approval == .pending) }
 
+    /// Blocked on the device: `FILTERED` is enforced like `BLOCKED` (child-app-spec §7).
+    var isBlocked: Bool { approval == .blocked || approval == .filtered }
+
     /// The design's subtitle: "Always allowed", "1 hour/day", "Ask parent", or "Blocked".
     var subtitle: String {
         switch approval {
         case .alwaysAllowed: return "Always allowed"
         case .pending: return "Ask parent"
         case .blocked: return isRequested ? "Blocked · asked again" : "Blocked"
-        case .allowed, .filtered:
+        case .filtered: return isRequested ? "Filtered (blocked) · asked again" : "Filtered (blocked)"
+        case .allowed:
             if let minutes = dailyLimitMinutes {
                 return ProtectionSettings.formatDailyAllowance(minutes).replacingOccurrences(of: " / day", with: "/day")
             }
@@ -1497,23 +1662,38 @@ nonisolated struct Visit: Codable, Equatable, Identifiable, Sendable {
     var deviceName: String
     var lat: Double
     var lng: Double
-    /// Nil once a saved place is removed or the fix falls outside every place: show "Unnamed place".
+    /// Nil unless a saved place named it (devices don't reverse-geocode), or once that place is removed: show "Unnamed place".
     var placeLabel: String?
     var placeId: String? = nil
     var arrivedAt: Date
     var lastSeenAt: Date?
     var timeLabel: String
     var day: DayGroup
-    /// False for a fix taken while passing by (under about 4 minutes). Leave those out of "places visited".
+    /// False for a fix taken while passing by (under about 4 minutes); nil from older servers (treated as a stay).
     var stayed: Bool? = nil
     var durationMinutes: Int? = nil
-    /// "7:40 AM – 2:10 PM · 6 h 30 min", or across midnight "11:00 PM – 7:00 AM next day · 8 h".
+    /// "7:40 AM – 2:10 PM · 6 h 30 min", or across midnight "11:00 PM – 7:00 AM next day · 8 h" (family time zone).
     var spanLabel: String? = nil
 
     var isPassingBy: Bool { stayed == false }
     var displayLabel: String { placeLabel ?? (isPassingBy ? "Passing by" : "Unnamed place") }
     /// Where to send a "Name this place" tap: visits already inside a saved place don't need one.
     var canBeNamed: Bool { placeId == nil && !isPassingBy }
+
+    /// Worded as the web's: a fix taken while passing by isn't a place the child went to.
+    var title: String {
+        if isPassingBy { return placeLabel.map { "Passed by \($0)" } ?? "Passing by" }
+        return placeLabel ?? "Unnamed place"
+    }
+
+    /// When, and on which device.
+    var detail: String { "\(spanLabel ?? timeLabel) · \(deviceName)" }
+}
+
+/// The device eGuard is waiting on to report whether location sharing is on.
+nonisolated struct WaitingDevice: Codable, Equatable, Sendable {
+    var deviceId: String?
+    var deviceName: String
 }
 
 nonisolated struct LocationHistory: Codable, Equatable, Sendable {
@@ -1527,13 +1707,15 @@ nonisolated struct LocationResponse: Codable, Equatable, Sendable {
     var childId: String
     var sharing: Bool
     var state: String?
-    /// Set when `state` is `waiting` only because this device hasn't yet reported whether it shares.
-    var waitingForReport: String?
+    /// With state `waiting`: no device has said yet whether it shares; name it ("Waiting for iPad to report…").
+    var waitingForReport: WaitingDevice?
     var current: CurrentLocation?
     var devices: [LocationDevice]
     var history: LocationHistory
+    /// Set when the location comes from an iPhone or iPad: it updates only while eGuard is open there. Show it under the location.
+    var note: String?
 
-    init(childId: String, sharing: Bool, state: String? = nil, waitingForReport: String? = nil, current: CurrentLocation?, devices: [LocationDevice], history: LocationHistory) {
+    init(childId: String, sharing: Bool, state: String? = nil, waitingForReport: WaitingDevice? = nil, current: CurrentLocation?, devices: [LocationDevice], history: LocationHistory, note: String? = nil) {
         self.childId = childId
         self.sharing = sharing
         self.state = state
@@ -1541,12 +1723,13 @@ nonisolated struct LocationResponse: Codable, Equatable, Sendable {
         self.current = current
         self.devices = devices
         self.history = history
+        self.note = note
     }
 
     /// "Waiting for Galaxy A54 to report whether location sharing is on", or the plain state title.
     var stateDescription: String {
         if let device = waitingForReport, locationState == .waiting {
-            return "Waiting for \(device) to report whether location sharing is on"
+            return "Waiting for \(device.deviceName) to report whether location sharing is on"
         }
         return locationState.title
     }
@@ -1579,6 +1762,8 @@ nonisolated struct FamilyLocation: Codable, Equatable, Identifiable, Sendable {
     var state: String
     var waitingForReport: String? = nil
     var location: CurrentLocation?
+    /// As on `LocationResponse`: why an iPhone's location may be old.
+    var note: String?
 
     var id: String { childId }
     var locationState: LocationState { LocationState(rawValue: state) ?? (location == nil ? .waiting : .located) }
@@ -1934,11 +2119,13 @@ nonisolated struct StoreInfo: Codable, Equatable, Sendable {
     var productId: String?
     var autoRenewing: Bool?
     var expiresAt: Date?
+    /// The organization that paid, for a VOUCHER plan (newer servers)
+    var sponsor: String?
 
     /// How the plan is paid, in parent-friendly words. Sponsor codes are redeemed on the web only.
     var title: String {
         switch name {
-        case "VOUCHER": "Sponsored plan"
+        case "VOUCHER": sponsor.map { "Sponsored by \($0)" } ?? "Sponsored plan"
         case "GOOGLE_PLAY": "Google Play"
         case "PAYMONGO": autoRenewing == false ? "Pass" : "Web subscription"
         default: name.capitalized
@@ -2076,7 +2263,10 @@ nonisolated enum LucideIcon {
         case "film", "tv": "play.rectangle.fill"
         case "crown": "crown.fill"
         case "trash": "trash.fill"
-        case "user", "users": "person.2.fill"
+        case "user": "person.fill"
+        // Devices alerts: "Switched to another user", "Used on another user"
+        case "users": "person.2.fill"
+        case "user-check": "person.crop.circle.badge.checkmark"
         case "message-circle": "bubble.left.and.bubble.right.fill"
         default: fallback
         }

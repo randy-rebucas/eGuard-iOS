@@ -264,6 +264,7 @@ struct SupportTicketView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         HelpSupportView()
@@ -271,3 +272,4 @@ struct SupportTicketView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

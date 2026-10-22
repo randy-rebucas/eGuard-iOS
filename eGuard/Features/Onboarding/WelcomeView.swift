@@ -87,6 +87,7 @@ struct WelcomeView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         WelcomeView()
@@ -94,3 +95,4 @@ struct WelcomeView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

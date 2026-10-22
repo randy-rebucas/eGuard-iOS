@@ -45,7 +45,7 @@ struct ProtectionsView: View {
                                         .foregroundStyle(protection.openBatchId != nil ? EGuardColors.primary : EGuardColors.textSecondary)
                                 }
                                 Spacer(minLength: EGuardSpacing.xs)
-                                HealthStatusBadge(status: protection.status.healthStatus)
+                                HealthStatusBadge(status: protection.displayStatus)
                                 Image(systemName: "chevron.right")
                                     .font(.footnote.weight(.semibold))
                                     .foregroundStyle(EGuardColors.neutral)
@@ -71,14 +71,17 @@ struct ProtectionsView: View {
         .navigationTitle("Manage Protection")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadProtections() }
+        .refreshable { await loadProtections() }
     }
 
     private func loadProtections() async {
-        state = .loading
+        // Keep the list on screen while a pull-to-refresh reloads it
+        if state.value == nil { state = .loading }
         state = await load { try await model.api.protections(childId: childId) }
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         ProtectionsView(childId: "child_1")
@@ -86,3 +89,4 @@ struct ProtectionsView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

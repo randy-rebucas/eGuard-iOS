@@ -18,12 +18,33 @@ final class ManagedSettingsRestrictionService: RestrictionService {
     }
 
     func applyAppInstallation(_ policy: AppInstallationPolicy) throws {
-        switch policy {
-        case .blocked:
-            store.application.denyAppInstallation = true
-        case .allowed, .parentApproval:
-            // Ask to Buy is a Family Sharing setting Apple does not expose to apps.
-            store.application.denyAppInstallation = nil
+        // Ask to Buy is a Family Sharing setting Apple does not expose to apps, so only blocking denies installs.
+        try applyInstallApproval(.appApproval, required: policy == .blocked)
+    }
+
+    func applyInstallApproval(_ reason: InstallApprovalReason, required: Bool) throws {
+        var reasons = installApprovalReasons
+        if required {
+            reasons.insert(reason)
+        } else {
+            reasons.remove(reason)
+        }
+        installApprovalReasons = reasons
+        store.application.denyAppInstallation = reasons.isEmpty ? nil : true
+    }
+
+    /// Kept in the App Group, beside the store it explains, so it survives relaunches.
+    private var installApprovalReasons: Set<InstallApprovalReason> {
+        get {
+            let raw = EGuardShared.sharedDefaults?.stringArray(forKey: EGuardShared.DefaultsKey.installApprovalReasons) ?? []
+            return Set(raw.compactMap(InstallApprovalReason.init(rawValue:)))
+        }
+        set {
+            if newValue.isEmpty {
+                EGuardShared.sharedDefaults?.removeObject(forKey: EGuardShared.DefaultsKey.installApprovalReasons)
+            } else {
+                EGuardShared.sharedDefaults?.set(newValue.map(\.rawValue).sorted(), forKey: EGuardShared.DefaultsKey.installApprovalReasons)
+            }
         }
     }
 
@@ -77,8 +98,13 @@ final class ManagedSettingsRestrictionService: RestrictionService {
         store.application.denyAppRemoval = deny ? true : nil
     }
 
+    func applyAutomaticDateAndTime(require: Bool) throws {
+        store.dateAndTime.requireAutomaticDateAndTime = require ? true : nil
+    }
+
     func clearAllRestrictions() {
         store.clearAllSettings()
+        installApprovalReasons = []
         ManagedSettingsStore(named: EGuardShared.Store.downtime).clearAllSettings()
         ManagedSettingsStore(named: EGuardShared.Store.dailyLimits).clearAllSettings()
     }
@@ -94,6 +120,11 @@ final class ManagedSettingsRestrictionService: RestrictionService {
         snapshot.denyAppRemoval = store.application.denyAppRemoval
         snapshot.maximumAppRatingAge = store.appStore.maximumRating.flatMap { RatingTiers.age(forRating: $0, in: RatingTiers.appStore) }
         snapshot.contentRatingAge = store.media.maximumMovieRating.flatMap { RatingTiers.age(forRating: $0, in: RatingTiers.movies) }
+        snapshot.maximumAppRating = store.appStore.maximumRating
+        snapshot.movieRating = store.media.maximumMovieRating
+        snapshot.tvRating = store.media.maximumTVShowRating
+        snapshot.installApprovalReasons = installApprovalReasons
+        snapshot.requiresAutomaticDateAndTime = store.dateAndTime.requireAutomaticDateAndTime
         snapshot.shieldedApplicationCount = store.shield.applications?.count ?? 0
         if let categories = store.shield.applicationCategories {
             snapshot.isApplicationCategoryShieldActive = categories != .none

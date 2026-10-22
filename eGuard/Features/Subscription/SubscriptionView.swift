@@ -26,6 +26,7 @@ struct SubscriptionView: View {
         .navigationTitle("Your plan")
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadSubscription() }
+        .refreshable { await loadSubscription() }
     }
 
     private func loadSubscription() async {
@@ -34,7 +35,7 @@ struct SubscriptionView: View {
 
     private func statusLine(_ info: SubscriptionInfo) -> String {
         var parts: [String] = [info.isActive ? "Active Plan" : "Expired"]
-        if info.isSponsored { parts.append("Sponsored plan") } else if let store = info.store { parts.append(store.title) }
+        if let store = info.store { parts.append(store.title) }
         if let renews = info.renewsLabel { parts.append(renews) }
         return parts.joined(separator: " · ")
     }
@@ -109,6 +110,7 @@ struct SubscriptionView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         SubscriptionView()
@@ -116,3 +118,4 @@ struct SubscriptionView: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

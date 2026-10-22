@@ -1,3 +1,4 @@
+import FamilyControls
 import SwiftUI
 
 /// Everything shown in child device mode: setup until permissions are done, the removed screen after a
@@ -40,6 +41,8 @@ struct ChildHomeView: View {
     @State private var isAskingForApp = false
     @State private var appName = ""
     @State private var askResult: String?
+    @State private var isPickingApps = false
+    @State private var selection = FamilyActivitySelection()
 
     private var childDevice: ChildDeviceModel { model.childDevice }
     private var childName: String { childDevice.session?.childName ?? "you" }
@@ -58,6 +61,40 @@ struct ChildHomeView: View {
             }
 
             syncCard
+
+            if childDevice.needsScreenTimeApps {
+                // Setup was finished with "Skip for now": the limit can't apply until apps are chosen. Only offered
+                // while none are, so it can't be used to swap the parent's choice for a lighter one.
+                EGuardCard {
+                    Label("Choose the apps screen time counts", systemImage: "hourglass")
+                        .font(EGuardTypography.headline)
+                        .foregroundStyle(EGuardColors.warning)
+                    Text("Your parent set a daily screen time limit. It starts once the apps it counts are chosen. Ask a parent to choose them with you.")
+                        .font(EGuardTypography.caption)
+                        .foregroundStyle(EGuardColors.textSecondary)
+                    Button("Choose apps") { isPickingApps = true }
+                        .buttonStyle(.eGuardSecondary)
+                        .accessibilityIdentifier("childHome.chooseApps")
+                }
+            }
+
+            if !childDevice.applyProblemsToShow.isEmpty {
+                // A protection the device couldn't apply: said here, and reported to the parent with the reason
+                EGuardCard {
+                    Label("Some settings couldn't be applied", systemImage: "exclamationmark.triangle")
+                        .font(EGuardTypography.headline)
+                        .foregroundStyle(EGuardColors.warning)
+                    ForEach(childDevice.applyProblemsToShow, id: \.name) { problem in
+                        Text("\(problem.name): \(problem.reason)")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
+                    Text("Your parent can see this too. eGuard tries again each time it checks in.")
+                        .font(EGuardTypography.caption)
+                        .foregroundStyle(EGuardColors.textSecondary)
+                }
+                .accessibilityIdentifier("childHome.applyProblems")
+            }
 
             protectionsCard
 
@@ -115,6 +152,11 @@ struct ChildHomeView: View {
         .background(EGuardColors.heroGradient.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
         .refreshable { await childDevice.syncNow() }
+        .familyActivityPicker(isPresented: $isPickingApps, selection: $selection)
+        .onChange(of: selection) { _, newValue in
+            childDevice.setScreenTimeSelection(ActivitySelectionCodec.snapshot(from: newValue))
+            Task { await childDevice.syncNow() }
+        }
         .alert("Ask a parent for an app", isPresented: $isAskingForApp) {
             TextField("App name", text: $appName)
             Button("Ask") { Task { await ask() } }
@@ -184,7 +226,7 @@ struct ChildHomeView: View {
                         Spacer()
                         if status.isMatching {
                             StatusPill(text: "On", tint: EGuardColors.success)
-                        } else if status.capability == .guided || status.capability == .verifyOnly {
+                        } else if status.capability.isGuided {
                             StatusPill(text: "Set in Settings", tint: EGuardColors.warning)
                         } else {
                             StatusPill(text: "Applying…", tint: EGuardColors.neutral)
@@ -204,15 +246,19 @@ struct ChildHomeView: View {
         guard !name.isEmpty else { return }
         do {
             switch try await childDevice.requestApp(named: name) {
-            case .allowed?, .alwaysAllowed?, .filtered?:
+            case .allowed?, .alwaysAllowed?:
                 askResult = "\(name) is already allowed. You can use it."
-            case .blocked?:
+            // Devices block filtered apps like blocked ones; the server passes the request on to the parent
+            case .blocked?, .filtered?:
                 askResult = "Your parent said no to \(name) for now."
             default:
                 askResult = "We asked your parent about \(name). You'll be able to use it once they approve."
             }
-        } catch {
+        } catch let error as DeviceAPIError where error.isRetryable {
+            // Queued by requestApp
             askResult = "We'll send your request for \(name) as soon as eGuard is back online."
+        } catch {
+            askResult = "Your request for \(name) couldn't be sent: \(error.localizedDescription)"
         }
     }
 }
@@ -242,7 +288,9 @@ struct DeviceRemovedView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     ChildDeviceRootView()
         .environment(AppModel.live())
 }
+#endif

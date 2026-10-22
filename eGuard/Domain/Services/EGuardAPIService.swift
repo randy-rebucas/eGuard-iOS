@@ -1,7 +1,6 @@
 import Foundation
 
 /// Every eGuard Parent Mobile API call the app makes. Implemented by the live client and a mock.
-@MainActor
 protocol EGuardAPIService: AnyObject {
     // Public
     func appInfo() async throws -> AppInfo
@@ -9,7 +8,12 @@ protocol EGuardAPIService: AnyObject {
     func helpArticle(slug: String) async throws -> HelpArticle
 
     // Auth
-    func register(name: String, email: String, password: String, familyName: String?) async throws -> AuthResponse
+    /// Create Account, step 1: emails a 6-digit code. No account and no session yet.
+    func register(name: String, email: String, password: String, familyName: String?) async throws -> SignupStarted
+    /// Create Account, step 2: the emailed code creates the account (email verified) and signs in.
+    func verifySignup(signup: String, code: String) async throws -> AuthResponse
+    /// "Send a new code" for a pending sign-up. The previous code stops working.
+    func resendSignupCode(signup: String) async throws -> SignupCodeSent
     func login(email: String, password: String) async throws -> LoginResult
     /// `nonce` is the raw value whose hash was put in the Apple request. Servers that don't know the
     /// field yet may refuse it; callers retry without it on a 400 that names the nonce.
@@ -72,11 +76,16 @@ protocol EGuardAPIService: AnyObject {
     /// `baseVersion` is the protection's `version` when the parent loaded it; a change since answers `409 stale`.
     func updateProtection(childId: String, key: String, config: JSONValue, baseVersion: String?) async throws -> ProtectionUpdateResult
     func batch(id: String) async throws -> Batch
-    func confirmBatch(id: String) async throws -> Batch
+    /// `key`: confirm only that protection's guided steps (nil: every guided step in the batch).
+    func confirmBatch(id: String, key: String?) async throws -> Batch
     func cancelBatch(id: String) async throws -> Int
 
     // Activity
     func screenTime(childId: String, period: ScreenTimePeriod) async throws -> ScreenTimeReport
+    func extraTime(childId: String) async throws -> ExtraTime
+    func grantExtraTime(childId: String, minutes: Int) async throws -> ExtraTimeGrant
+    /// Ends running extra time, or answers the child's request with "not now".
+    func endExtraTime(childId: String) async throws
     func apps(childId: String, filter: AppsFilter?) async throws -> AppsResponse
     func updateApp(id: String, patch: AppPatch) async throws -> AppRuleUpdate
     func addApp(childId: String, name: String, approval: AppApproval, dailyLimitMinutes: Int?) async throws -> ChildApp
@@ -103,10 +112,11 @@ protocol EGuardAPIService: AnyObject {
     // Devices, browsers and checks
     func devices() async throws -> DevicesResponse
     func device(id: String) async throws -> DeviceDetail
+    /// `PATCH /devices/{id} { name?, isPrimary? }`. `renameDevice` and `setPrimaryDevice` are shorthands for it.
     func updateDevice(id: String, patch: DevicePatch) async throws -> DeviceDetail
-    /// Moves the device to another child without pairing again.
+    /// Gives the device to another child without pairing again (`firstCheck` until it reports for them).
     func moveDevice(id: String, childId: String, confirmation: DeletionConfirmation) async throws -> DeviceDetail
-    /// `deleteHistory` also deletes what the device recorded; by default it stays with the child.
+    /// `deleteHistory` also deletes the screen time, app usage and places it recorded; otherwise they stay with the child.
     func unpairDevice(id: String, confirmation: DeletionConfirmation, deleteHistory: Bool) async throws
     func browsers() async throws -> [ConnectedBrowser]
     func removeBrowser(id: String, confirmation: DeletionConfirmation) async throws
@@ -119,6 +129,7 @@ protocol EGuardAPIService: AnyObject {
 
     // Family, organizations and privacy
     func family() async throws -> Family
+    /// `PATCH /family { name }`: family admin only (403 `forbidden` otherwise).
     func renameFamily(name: String) async throws -> Family
     func inviteMember(name: String, email: String) async throws -> InvitationSent
     func resendInvitation(memberId: String) async throws
@@ -148,6 +159,11 @@ extension EGuardAPIService {
 
     func renameDevice(id: String, name: String) async throws -> DeviceDetail {
         try await updateDevice(id: id, patch: DevicePatch(name: name, isPrimary: nil))
+    }
+
+    /// Makes it its child's primary device: listed first and shown on the child's card.
+    func setPrimaryDevice(id: String) async throws -> DeviceDetail {
+        try await updateDevice(id: id, patch: DevicePatch(name: nil, isPrimary: true))
     }
 
     func unpairDevice(id: String, confirmation: DeletionConfirmation) async throws {

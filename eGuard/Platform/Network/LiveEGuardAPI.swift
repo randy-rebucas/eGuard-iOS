@@ -36,12 +36,22 @@ final class LiveEGuardAPI: EGuardAPIService {
 
     // MARK: Auth
 
-    func register(name: String, email: String, password: String, familyName: String?) async throws -> AuthResponse {
+    func register(name: String, email: String, password: String, familyName: String?) async throws -> SignupStarted {
         struct Body: Encodable { let name: String; let email: String; let password: String; let familyName: String?; let guardian: Bool }
         return try await client.send(
             .json(.post, "auth/register", body: Body(name: name, email: email, password: password, familyName: familyName, guardian: true), requiresAuth: false),
-            as: AuthResponse.self
+            as: SignupStarted.self
         )
+    }
+
+    func verifySignup(signup: String, code: String) async throws -> AuthResponse {
+        struct Body: Encodable { let signup: String; let code: String }
+        return try await client.send(.json(.post, "auth/register/verify", body: Body(signup: signup, code: code), requiresAuth: false), as: AuthResponse.self)
+    }
+
+    func resendSignupCode(signup: String) async throws -> SignupCodeSent {
+        struct Body: Encodable { let signup: String }
+        return try await client.send(.json(.post, "auth/register/resend", body: Body(signup: signup), requiresAuth: false), as: SignupCodeSent.self)
     }
 
     func login(email: String, password: String) async throws -> LoginResult {
@@ -273,8 +283,8 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.get("batches/\(id)"), as: Batch.self)
     }
 
-    func confirmBatch(id: String) async throws -> Batch {
-        try await client.send(.empty(.post, "batches/\(id)/confirm"), as: Batch.self)
+    func confirmBatch(id: String, key: String?) async throws -> Batch {
+        try await client.send(.empty(.post, "batches/\(id)/confirm", query: key.map { [URLQueryItem(name: "key", value: $0)] } ?? []), as: Batch.self)
     }
 
     func cancelBatch(id: String) async throws -> Int {
@@ -287,6 +297,19 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.get("children/\(childId)/screen-time", query: [URLQueryItem(name: "period", value: period.rawValue)]), as: ScreenTimeReport.self)
     }
 
+    func extraTime(childId: String) async throws -> ExtraTime {
+        try await client.send(.get("children/\(childId)/extra-time"), as: ExtraTime.self)
+    }
+
+    func grantExtraTime(childId: String, minutes: Int) async throws -> ExtraTimeGrant {
+        struct Body: Encodable { let minutes: Int }
+        return try await client.send(.json(.post, "children/\(childId)/extra-time", body: Body(minutes: minutes)), as: ExtraTimeGrant.self)
+    }
+
+    func endExtraTime(childId: String) async throws {
+        try await client.send(.empty(.delete, "children/\(childId)/extra-time"))
+    }
+
     func apps(childId: String, filter: AppsFilter?) async throws -> AppsResponse {
         try await client.send(.get("children/\(childId)/apps", query: query([("filter", filter?.rawValue)])), as: AppsResponse.self)
     }
@@ -296,7 +319,13 @@ final class LiveEGuardAPI: EGuardAPIService {
     }
 
     func addApp(childId: String, name: String, approval: AppApproval, dailyLimitMinutes: Int?) async throws -> ChildApp {
-        try await client.send(.json(.post, "children/\(childId)/apps", body: NewAppRequest(name: name, approval: approval, dailyLimitMinutes: dailyLimitMinutes)), as: ChildApp.self)
+        // The reply is the rule (no `allowed`, no usage), not a list row: decoding it as `ChildApp` failed every add
+        let rule = try await client.send(.json(.post, "children/\(childId)/apps", body: NewAppRequest(name: name, approval: approval, dailyLimitMinutes: dailyLimitMinutes)), as: AppRuleUpdate.self)
+        return ChildApp(
+            id: rule.id, name: rule.name, approval: rule.approval, approvalLabel: rule.approvalLabel,
+            allowed: rule.approval == .allowed || rule.approval == .alwaysAllowed,
+            dailyLimitMinutes: rule.dailyLimitMinutes, todayMinutes: nil, installedAt: nil
+        )
     }
 
     func categoryLimits(childId: String) async throws -> CategoryLimits {

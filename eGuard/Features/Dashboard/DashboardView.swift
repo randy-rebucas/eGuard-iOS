@@ -64,7 +64,7 @@ struct DashboardView: View {
 
     private func familyProtectionCard(_ dashboard: Dashboard) -> some View {
         let health = dashboard.health
-        let tint: Color = health.total == 0 ? EGuardColors.neutral : (health.isVerified ? EGuardColors.success : (health.score >= 5 ? EGuardColors.tileYellow : EGuardColors.danger))
+        let tint: Color = health.total == 0 ? EGuardColors.neutral : (health.isVerified ? EGuardColors.success : (health.fraction >= 0.5 ? EGuardColors.tileYellow : EGuardColors.danger))
         return EGuardCard {
             Button {
                 router.push(.healthCheck(childId: nil, isOnboarding: false))
@@ -108,8 +108,20 @@ struct DashboardView: View {
                 Button("Health Check") { router.push(.healthCheck(childId: nil, isOnboarding: false)) }
                     .buttonStyle(.eGuardSecondary)
             }
-            // Browsers take plan slots too, so the card counts them with phones and tablets, as the web does.
-            EGuardValueRow(label: (dashboard.browserCount ?? 0) > 0 ? "Devices & browsers" : "Devices", value: "\(dashboard.slotsUsed)")
+            // Shown alongside other issues too (as on the web): a child without a phone isn't protected, whatever
+            // the score says. Their profile has "Pair a device".
+            let unpaired = dashboard.children.filter { $0.deviceCount == 0 }
+            if let first = unpaired.first {
+                Button {
+                    router.push(.childProfile(childId: first.id))
+                } label: {
+                    Label(unpaired.count == 1 ? "Pair \(first.name)'s device" : "Pair a device", systemImage: "plus")
+                }
+                .buttonStyle(.eGuardSecondary)
+                .accessibilityIdentifier("dashboard.pairDevice")
+            }
+            // Phones, tablets and browsers, as the web's Devices card and the plan's device limit count them
+            EGuardValueRow(label: "Devices", value: "\(dashboard.connectedDevices)")
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("dashboard.protection")
@@ -132,6 +144,11 @@ struct DashboardView: View {
                                     .font(EGuardTypography.label)
                                     .foregroundStyle(EGuardColors.textPrimary)
                                 StatusPill(text: child.status.title, tint: statusTint(child.status))
+                                if child.isBrowserOnly {
+                                    Text("Browser only")
+                                        .font(EGuardTypography.caption)
+                                        .foregroundStyle(EGuardColors.textSecondary)
+                                }
                             }
                         }
                         .buttonStyle(.plain)
@@ -172,8 +189,13 @@ struct DashboardView: View {
                 } else {
                     ForEach(dashboard.recentAlerts) { alert in
                         APIAlertRow(alert: alert) {
-                            Task { _ = try? await model.api.markAlertRead(id: alert.id) }
-                            if let action = alert.routableAction { router.open(action) } else { router.show(.alerts) }
+                            Task {
+                                // Keep the Alerts tab badge in step, as the Alerts list does
+                                if !alert.read, let unread = try? await model.api.markAlertRead(id: alert.id) {
+                                    model.setUnreadAlerts(unread)
+                                }
+                            }
+                            if !(alert.action.map { router.open($0) } ?? false) { router.show(.alerts) }
                         }
                         if alert.id != dashboard.recentAlerts.last?.id { Divider() }
                     }
@@ -239,6 +261,7 @@ struct APIAlertRow: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationStack {
         DashboardView()
@@ -246,3 +269,4 @@ struct APIAlertRow: View {
     .environment(AppModel.live())
     .environment(AppRouter())
 }
+#endif

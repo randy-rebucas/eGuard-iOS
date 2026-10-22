@@ -9,11 +9,18 @@ struct PairingCodeView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var state: LoadState<PairingCode> = .loading
     @State private var isPaired = false
-    @State private var secondsLeft = 15 * 60
+    /// When the shown code stops working, on this phone's clock, from `expiresInSeconds` when it arrived.
+    @State private var deadline: Date?
     @State private var kind: CodeKind = .device
     @State private var browserLabel = ""
     /// Set when the server refused the code with `403 email_unverified`, so the Resend banner shows.
     @State private var needsVerification = false
+    /// The device code, kept while the parent looks at the browser tab so coming back doesn't replace it.
+    @State private var deviceCode: (code: PairingCode, deadline: Date)?
+    /// The devices the child had when the sheet opened: a new id is the one that just paired.
+    @State private var knownDevices: Set<String>?
+    /// A browser code is on its way: "Create browser code" ignores taps (each tap would make a code).
+    @State private var isCreatingBrowserCode = false
 
     /// Phone-app codes and browser-extension codes are different and never interchangeable.
     private enum CodeKind: String, CaseIterable, Hashable {
@@ -35,9 +42,9 @@ struct PairingCodeView: View {
 
                 if kind == .browser, state.value?.isBrowserCode != true {
                     EGuardTextField(label: "Computer or browser name", placeholder: "Mia's MacBook", text: $browserLabel, symbolName: "laptopcomputer", autocapitalization: .words)
-                    Button("Create browser code") { Task { await requestCode() } }
+                    Button(isCreatingBrowserCode ? "Creating…" : "Create browser code") { Task { await requestCode() } }
                         .buttonStyle(.eGuardSecondary)
-                        .disabled(browserLabel.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(browserLabel.trimmingCharacters(in: .whitespaces).isEmpty || isCreatingBrowserCode)
                 }
 
                 switch state {
@@ -58,10 +65,23 @@ struct PairingCodeView: View {
                             .frame(maxWidth: .infinity)
                             .accessibilityLabel("Pairing code \(code.code.map(String.init).joined(separator: " "))")
                             .accessibilityIdentifier("pairing.code")
-                        Text(secondsLeft > 0 ? "Valid for \(secondsLeft / 60) min \(secondsLeft % 60) s · single use" : "This code expired. Create a new one.")
-                            .font(EGuardTypography.caption)
-                            .foregroundStyle(EGuardColors.textSecondary)
-                            .frame(maxWidth: .infinity)
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            let left = secondsLeft(at: context.date)
+                            Text(left > 0 ? "Valid for \(left / 60) min \(left % 60) s · single use" : "This code expired.")
+                                .font(EGuardTypography.caption)
+                                .foregroundStyle(EGuardColors.textSecondary)
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    if !isPaired {
+                        // Re-evaluated every second, so the button appears the moment the code expires
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            if secondsLeft(at: context.date) == 0 {
+                                Button("Get a new code") { Task { await requestCode() } }
+                                    .buttonStyle(.eGuardSecondary)
+                                    .accessibilityIdentifier("pairing.newCode")
+                            }
+                        }
                     }
 
                     if isPaired {
@@ -98,7 +118,7 @@ struct PairingCodeView: View {
                             dismiss()
                         }
                         Divider()
-                        EGuardNavRow(title: "Android", subtitle: "Family Link and device admin", symbolName: "smartphone", tint: EGuardColors.success) {
+                        EGuardNavRow(title: "Android", subtitle: "The eGuard app; no Family Link needed", symbolName: "smartphone", tint: EGuardColors.success) {
                             router.push(.helpArticle(slug: "android-family-link"))
                             dismiss()
                         }
@@ -109,7 +129,6 @@ struct PairingCodeView: View {
                         }
                     }
                 }
-
             } actions: {
                 Button(isPaired ? "Done" : "Close") { dismiss() }
                     .buttonStyle(isPaired ? AnyButtonStyle(.eGuardPrimary) : AnyButtonStyle(.eGuardSecondary))
@@ -121,8 +140,18 @@ struct PairingCodeView: View {
         .task { await requestCode() }
         .task { await pollForDevice() }
         .onChange(of: kind) { _, newKind in
-            // Switching kinds asks for the matching code; a browser code needs a label first.
-            if newKind == .device { Task { await requestCode() } } else { state = .loading }
+            // A browser code needs a label first. Back on the phone tab, the code already made still works (a new one
+            // would replace it, and count toward the 20 an hour), so it's shown again while it's valid.
+            if newKind == .device {
+                if let kept = deviceCode, kept.deadline > .now {
+                    state = .loaded(kept.code)
+                    deadline = kept.deadline
+                } else {
+                    Task { await requestCode() }
+                }
+            } else {
+                state = .loading
+            }
         }
     }
 
@@ -132,17 +161,31 @@ struct PairingCodeView: View {
         return String(characters[0..<4]) + " " + String(characters[4..<8])
     }
 
+    private func secondsLeft(at date: Date) -> Int {
+        guard let deadline else { return 0 }
+        return max(0, Int(deadline.timeIntervalSince(date).rounded(.up)))
+    }
+
     private func requestCode() async {
+        let browser = kind == .browser
+        if browser {
+            guard !isCreatingBrowserCode else { return }
+            isCreatingBrowserCode = true
+        }
+        defer { if browser { isCreatingBrowserCode = false } }
         state = .loading
         needsVerification = false
         let label = browserLabel.trimmingCharacters(in: .whitespaces)
         do {
-            let code = kind == .browser
+            let code = browser
                 ? try await model.api.browserPairingCode(childId: childId, deviceLabel: label)
                 : try await model.api.pairingCode(childId: childId)
+            // Count down from `expiresInSeconds`, measured from now on this phone's clock (which may be off).
+            // The countdown is computed from this deadline, not decremented per poll tick.
+            let end = Date.now.addingTimeInterval(TimeInterval(code.secondsRemaining))
+            deadline = end
+            if !browser { deviceCode = (code, end) }
             state = .loaded(code)
-            // Count down from `expiresInSeconds`, measured from now: the phone's clock may be off.
-            secondsLeft = code.secondsRemaining
         } catch let error as APIError where error.code == "email_unverified" {
             needsVerification = true
             state = .failed(error.localizedDescription)
@@ -157,14 +200,28 @@ struct PairingCodeView: View {
     /// Shown when `POST /children/{id}/pairing-code` answers `409`. Neutral: no upgrade wording.
     static let deviceLimitMessage = "No free device slots on your plan. Remove a device or browser on the Devices tab, then create a new code. Contact support if you need to change your plan."
 
-    /// Polls the child until a device appears, and counts the code down.
+    /// Polls the child while a phone code is valid, until a device that wasn't there before appears.
     private func pollForDevice() async {
         while !Task.isCancelled && !isPaired {
-            try? await Task.sleep(for: BatchPoller.interval)
-            secondsLeft = max(0, secondsLeft - 1)
-            if let detail = try? await model.api.child(id: childId), !detail.devices.isEmpty {
-                isPaired = true
-                await model.refreshDashboard()
+            // The first look (before sleeping) records the devices the child already has
+            if knownDevices != nil { try? await Task.sleep(for: BatchPoller.interval) }
+            // Nothing can pair with an expired code (or none yet): wait for "Get a new code"
+            if knownDevices != nil, !(deviceCode.map { $0.deadline > .now } ?? false) {
+                continue
+            }
+            do {
+                let ids = Set(try await model.api.child(id: childId).devices.map(\.id))
+                guard let known = knownDevices else { knownDevices = ids; continue }
+                if !ids.subtracting(known).isEmpty {
+                    isPaired = true
+                    await model.refreshDashboard()
+                }
+            } catch let error as APIError where error.status == 404 {
+                // The child was removed (another parent, or the web): nothing left to pair
+                state = .failed(error.localizedDescription)
+                return
+            } catch {
+                if knownDevices == nil { try? await Task.sleep(for: BatchPoller.interval) }
             }
         }
     }
@@ -183,8 +240,10 @@ struct AnyButtonStyle: ButtonStyle {
     }
 }
 
+#if DEBUG
 #Preview {
     PairingCodeView(childId: "child_1")
         .environment(AppModel.live())
         .environment(AppRouter())
 }
+#endif

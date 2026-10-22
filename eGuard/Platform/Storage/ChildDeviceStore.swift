@@ -21,6 +21,9 @@ nonisolated struct ChildDeviceState: Codable, Equatable, Sendable {
     var setupComplete = false
     /// The last `/usage` total sent, so unchanged totals aren't resent every sync.
     var lastUsageSent: UsageRequest?
+    /// Minutes sent per local date (last month), so each day is sent once it changed. Optional: states saved by
+    /// older builds decode without it.
+    var usageSent: [String: Int]?
 
     func policyConfig(_ key: String) -> JSONValue? {
         policy.first { $0.key == key }?.config
