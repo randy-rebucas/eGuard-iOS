@@ -421,7 +421,7 @@ struct CheckboxToggleStyle: ToggleStyle {
     NavigationStack {
         CreateAccountView()
     }
-    .environment(AppModel.mock())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 
@@ -429,7 +429,7 @@ struct CheckboxToggleStyle: ToggleStyle {
     NavigationStack {
         SignupCodeView(signup: SignupStarted(verificationRequired: true, signup: "preview-ticket", email: "randy@example.com", expiresAt: .now.addingTimeInterval(900)))
     }
-    .environment(AppModel.mock())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

@@ -17,14 +17,8 @@ final class BatchPoller {
     private(set) var phase: Phase = .idle
     private var task: Task<Void, Never>?
 
-    /// Faster under UI tests so flows finish quickly.
-    static var interval: Duration {
-        #if DEBUG
-        ProcessInfo.processInfo.arguments.contains("-uiTesting") ? .milliseconds(250) : .seconds(1.5)
-        #else
-        .seconds(1.5)
-        #endif
-    }
+    /// The spec's polling cadence: every 1–2 seconds while the screen is visible.
+    static let interval: Duration = .seconds(1.5)
 
     var isBusy: Bool { phase == .polling }
 

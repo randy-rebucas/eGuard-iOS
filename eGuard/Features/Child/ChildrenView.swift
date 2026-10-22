@@ -86,7 +86,7 @@ struct ChildrenView: View {
     NavigationStack {
         ChildrenView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

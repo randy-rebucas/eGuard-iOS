@@ -23,7 +23,7 @@ nonisolated enum AppRoute: Hashable, Sendable {
     case editChild(childId: String)
     case protectionProfile(childId: String)
     case recommendedSetup(childId: String, profile: String)
-    case setupProgress(childId: String, profile: String, overrides: [JSONValue])
+    case setupProgress(childId: String, profile: String, overrides: [JSONValue], categoryLimits: [CategoryLimitUpdate]? = nil)
     case healthCheck(childId: String?, isOnboarding: Bool)
     case complete(childId: String, batchId: String?)
 
@@ -35,7 +35,8 @@ nonisolated enum AppRoute: Hashable, Sendable {
     case childProfile(childId: String)
     case screenTime(childId: String)
     /// `pending`: open on the Pending filter, where app and website requests are answered.
-    case appsManagement(childId: String, pending: Bool = false)
+    /// `requestId`: the website request to bring into view there (from a `REVIEW_SITE_REQUEST` alert).
+    case appsManagement(childId: String, pending: Bool = false, requestId: String? = nil)
     case location(childId: String)
     case deviceDetail(deviceId: String)
     case browserPolicy(childId: String)
@@ -121,14 +122,14 @@ final class AppRouter {
         popToRoot()
     }
 
-    /// Routes an alert's action button as the API describes. False when the app can't open it (an unknown type, or
-    /// a missing id), so the caller can fall back instead of a tap that goes nowhere.
-    @discardableResult
     /// Whether `open(_:)` goes somewhere for this action.
     static func canOpen(_ action: AlertAction) -> Bool {
         (action.type == "VIEW_BROWSERS" && action.childId == nil) || route(for: action) != nil
     }
 
+    /// Routes an alert's action button as the API describes. False when the app can't open it (an unknown type, or
+    /// a missing id), so the caller can fall back instead of a tap that goes nowhere.
+    @discardableResult
     func open(_ action: AlertAction) -> Bool {
         // A browser disconnected for security names no child: the Devices tab lists every browser
         if action.type == "VIEW_BROWSERS" && action.childId == nil {
@@ -154,7 +155,7 @@ final class AppRouter {
         case "VIEW_HISTORY": return childId.map { .childProfile(childId: $0) }
         case "VIEW_LOCATION": return childId.map { .location(childId: $0) }
         // Website requests are answered with app requests, under Apps › Pending
-        case "REVIEW_SITE_REQUEST": return childId.map { .appsManagement(childId: $0, pending: true) }
+        case "REVIEW_SITE_REQUEST": return childId.map { .appsManagement(childId: $0, pending: true, requestId: action.requestId) }
         case "VIEW_BROWSERS": return childId.map { .browserPolicy(childId: $0) }
         case "VIEW_ORGANIZATIONS": return .organizations
         case "VIEW_FAMILY": return .family

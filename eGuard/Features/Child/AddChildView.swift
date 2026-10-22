@@ -78,6 +78,11 @@ final class AddChildViewModel {
             await model.refreshDashboard()
             errorMessage = nil
             return id
+        } catch let error as APIError where error.code == "plan_limit" {
+            // The family is at its plan's child limit (also after a plan lapses back to Free). Neutral wording,
+            // and the parent's own way out: remove a child, or ask support.
+            errorMessage = "Your plan's child limit has been reached. Remove a child first, or contact support to change your plan."
+            return nil
         } catch {
             errorMessage = error.localizedDescription
             return nil
@@ -210,7 +215,7 @@ struct AddChildView: View {
     NavigationStack {
         AddChildView(childId: nil)
     }
-    .environment(AppModel.mock(signedIn: true))
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

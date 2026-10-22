@@ -343,7 +343,7 @@ struct ChildProfileView: View {
     NavigationStack {
         ChildProfileView(childId: "child_1")
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

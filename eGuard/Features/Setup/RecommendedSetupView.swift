@@ -8,6 +8,9 @@ final class RecommendedSetupViewModel {
     /// Current config per key, starting from the recommendation.
     var configs: [String: JSONValue] = [:]
     var editingKey: String?
+    /// The parent's edits to category limits ("Gaming time"), by category. Missing means the recommendation stands.
+    var categoryMinutes: [String: Int] = [:]
+    var editingCategory: RecommendedCategoryLimit?
 
     func load(childId: String, profile: String, api: EGuardAPIService) async {
         state = .loading
@@ -29,6 +32,16 @@ final class RecommendedSetupViewModel {
             guard let edited = configs[setting.key], edited != setting.config else { return nil }
             return edited.setting("key", to: .string(setting.key))
         }
+    }
+
+    func minutes(for limit: RecommendedCategoryLimit) -> Int? {
+        categoryMinutes[limit.category] ?? limit.dailyLimitMinutes
+    }
+
+    /// Category limits to send with the profile: only the ones the plan allows, with the parent's edits.
+    var categoryLimits: [CategoryLimitUpdate]? {
+        guard let limits = state.value?.categoryLimits?.filter(\.available), !limits.isEmpty else { return nil }
+        return limits.map { CategoryLimitUpdate(category: $0.category, dailyLimitMinutes: minutes(for: $0)) }
     }
 
     func binding(for key: String) -> Binding<JSONValue> {
@@ -79,6 +92,10 @@ struct RecommendedSetupView: View {
                     }
                 }
 
+                if let limits = recommendations.categoryLimits, !limits.isEmpty {
+                    categoryLimitsSection(limits)
+                }
+
                 VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
                     SectionHeader(title: "More protections")
                     EGuardCard {
@@ -103,7 +120,7 @@ struct RecommendedSetupView: View {
                 if viewModel.state.value?.settings.contains(where: { !$0.devices.isEmpty }) == true {
                     isConfirmingReplace = true
                 } else {
-                    router.push(.setupProgress(childId: childId, profile: profile, overrides: viewModel.overrides))
+                    router.push(.setupProgress(childId: childId, profile: profile, overrides: viewModel.overrides, categoryLimits: viewModel.categoryLimits))
                 }
             }
             .buttonStyle(.eGuardPrimary)
@@ -114,7 +131,7 @@ struct RecommendedSetupView: View {
         .task { await viewModel.load(childId: childId, profile: profile, api: model.api) }
         .confirmationDialog("Apply these settings?", isPresented: $isConfirmingReplace, titleVisibility: .visible) {
             Button("Apply to \(child?.name ?? "the child")'s devices") {
-                router.push(.setupProgress(childId: childId, profile: profile, overrides: viewModel.overrides))
+                router.push(.setupProgress(childId: childId, profile: profile, overrides: viewModel.overrides, categoryLimits: viewModel.categoryLimits))
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -123,6 +140,12 @@ struct RecommendedSetupView: View {
         .sheet(item: $viewModel.editingKey) { key in
             ProtectionConfigSheet(key: key, config: viewModel.binding(for: key))
                 .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $viewModel.editingCategory) { limit in
+            MinutesPickerSheet(title: limit.label, minutes: viewModel.minutes(for: limit) ?? 60) { minutes in
+                viewModel.categoryMinutes[limit.category] = minutes
+            }
+            .presentationDetents([.medium])
         }
     }
 
@@ -143,6 +166,77 @@ struct RecommendedSetupView: View {
         }
         .accessibilityIdentifier("recommended.edit.\(setting.key.lowercased())")
     }
+
+    /// The design's "Gaming time": one limit for all apps of a kind together. Locked on plans without it.
+    private func categoryLimitsSection(_ limits: [RecommendedCategoryLimit]) -> some View {
+        VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
+            SectionHeader(title: "App categories")
+            EGuardCard {
+                ForEach(limits) { limit in
+                    let kind = AppCategory(rawValue: limit.category)
+                    EGuardNavRow(
+                        title: limit.label,
+                        subtitle: subtitle(for: limit, kind: kind),
+                        symbolName: kind?.symbolName ?? "square.grid.2x2.fill",
+                        tint: EGuardColors.tileOrange
+                    ) {
+                        if limit.available { viewModel.editingCategory = limit }
+                    } trailing: {
+                        if !limit.available { StatusPill(text: "Not on your plan", tint: EGuardColors.neutral) }
+                    }
+                    .accessibilityIdentifier("recommended.category.\(limit.category.lowercased())")
+                    if limit.id != limits.last?.id { Divider() }
+                }
+            }
+        }
+    }
+
+    private func subtitle(for limit: RecommendedCategoryLimit, kind: AppCategory?) -> String {
+        guard limit.available else {
+            return APIClient.storeSafeMessage(limit.upgrade ?? "Not included in your plan.", status: 403)
+        }
+        guard let minutes = viewModel.minutes(for: limit) else { return "No limit" }
+        return "\(ProtectionConfigFormatter.duration(minutes)) a day, all \(kind?.title.lowercased() ?? "these apps") together"
+    }
+}
+
+/// Picks a number of minutes a day, for category limits and anything else that is just a duration.
+struct MinutesPickerSheet: View {
+    let title: String
+    let onSave: (Int) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var minutes: Int
+
+    init(title: String, minutes: Int, onSave: @escaping (Int) -> Void) {
+        self.title = title
+        self.onSave = onSave
+        _minutes = State(initialValue: minutes)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("Daily limit", selection: $minutes) {
+                    ForEach(ProtectionConfigEditor.minuteOptions, id: \.self) { option in
+                        Text(ProtectionConfigFormatter.duration(option)).tag(option)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave(minutes)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
 }
 
 extension String: @retroactive Identifiable {
@@ -154,7 +248,7 @@ extension String: @retroactive Identifiable {
     NavigationStack {
         RecommendedSetupView(childId: "child_1", profile: "PROTECTED")
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

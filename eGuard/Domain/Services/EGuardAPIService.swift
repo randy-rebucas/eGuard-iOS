@@ -1,14 +1,6 @@
 import Foundation
 
 /// Every eGuard Parent Mobile API call the app makes. Implemented by the live client and a mock.
-@MainActor
-extension EGuardAPIService {
-    /// Without `baseVersion`: the newest change wins (tests and flows that don't show a loaded version).
-    func updateProtection(childId: String, key: String, config: JSONValue) async throws -> ProtectionUpdate {
-        try await updateProtection(childId: childId, key: key, config: config, baseVersion: nil)
-    }
-}
-
 protocol EGuardAPIService: AnyObject {
     // Public
     func appInfo() async throws -> AppInfo
@@ -63,7 +55,8 @@ protocol EGuardAPIService: AnyObject {
     // Onboarding
     func profiles(age: Int) async throws -> [ProfileOption]
     func recommendations(childId: String, profile: String?) async throws -> Recommendations
-    func setup(childId: String, profile: String, overrides: [JSONValue]) async throws -> SetupResponse
+    /// `categoryLimits` sets category limits with the profile; a limit on a plan without them is `403 plan_required`.
+    func setup(childId: String, profile: String, overrides: [JSONValue], categoryLimits: [CategoryLimitUpdate]?) async throws -> SetupResponse
     func pairingCode(childId: String) async throws -> PairingCode
     func browserPairingCode(childId: String, deviceLabel: String) async throws -> PairingCode
 
@@ -80,8 +73,8 @@ protocol EGuardAPIService: AnyObject {
 
     // Protections and batches
     func protections(childId: String) async throws -> [Protection]
-    /// `baseVersion`: the protection's `version` as shown; a change made or queued since is refused (`409 stale`).
-    func updateProtection(childId: String, key: String, config: JSONValue, baseVersion: String?) async throws -> ProtectionUpdate
+    /// `baseVersion` is the protection's `version` when the parent loaded it; a change since answers `409 stale`.
+    func updateProtection(childId: String, key: String, config: JSONValue, baseVersion: String?) async throws -> ProtectionUpdateResult
     func batch(id: String) async throws -> Batch
     /// `key`: confirm only that protection's guided steps (nil: every guided step in the batch).
     func confirmBatch(id: String, key: String?) async throws -> Batch
@@ -96,9 +89,18 @@ protocol EGuardAPIService: AnyObject {
     func apps(childId: String, filter: AppsFilter?) async throws -> AppsResponse
     func updateApp(id: String, patch: AppPatch) async throws -> AppRuleUpdate
     func addApp(childId: String, name: String, approval: AppApproval, dailyLimitMinutes: Int?) async throws -> ChildApp
+    func categoryLimits(childId: String) async throws -> CategoryLimits
+    /// `nil` minutes removes the limit, which works on every plan.
+    func setCategoryLimit(childId: String, category: String, dailyLimitMinutes: Int?) async throws -> CategoryLimitSaved
     func location(childId: String) async throws -> LocationResponse
     func visits(childId: String, before: Date?) async throws -> VisitsPage
+    /// A day's route: that day's visits oldest first, thinned on a very busy day.
+    func visits(childId: String, day: String) async throws -> VisitsPage
     func familyLocations() async throws -> FamilyLocations
+    func places() async throws -> [SavedPlace]
+    func createPlace(_ place: NewPlace) async throws -> SavedPlace
+    func updatePlace(id: String, patch: PlacePatch) async throws -> SavedPlace
+    func deletePlace(id: String) async throws
 
     // Alerts
     func alerts(filter: AlertsFilter, childId: String?, includeResolved: Bool, before: Date?) async throws -> AlertsPage
@@ -110,9 +112,8 @@ protocol EGuardAPIService: AnyObject {
     // Devices, browsers and checks
     func devices() async throws -> DevicesResponse
     func device(id: String) async throws -> DeviceDetail
-    func renameDevice(id: String, name: String) async throws -> DeviceDetail
-    /// Makes it its child's primary device: listed first and shown on the child's card.
-    func setPrimaryDevice(id: String) async throws -> DeviceDetail
+    /// `PATCH /devices/{id} { name?, isPrimary? }`. `renameDevice` and `setPrimaryDevice` are shorthands for it.
+    func updateDevice(id: String, patch: DevicePatch) async throws -> DeviceDetail
     /// Gives the device to another child without pairing again (`firstCheck` until it reports for them).
     func moveDevice(id: String, childId: String, confirmation: DeletionConfirmation) async throws -> DeviceDetail
     /// `deleteHistory` also deletes the screen time, app usage and places it recorded; otherwise they stay with the child.
@@ -144,4 +145,28 @@ protocol EGuardAPIService: AnyObject {
     func subscription() async throws -> SubscriptionInfo
     func createTicket(category: String?, subject: String, message: String) async throws -> SupportTicket
     func tickets() async throws -> [SupportTicket]
+}
+
+/// Shorter forms of calls whose newer parameters are optional.
+extension EGuardAPIService {
+    func setup(childId: String, profile: String, overrides: [JSONValue]) async throws -> SetupResponse {
+        try await setup(childId: childId, profile: profile, overrides: overrides, categoryLimits: nil)
+    }
+
+    func updateProtection(childId: String, key: String, config: JSONValue) async throws -> ProtectionUpdateResult {
+        try await updateProtection(childId: childId, key: key, config: config, baseVersion: nil)
+    }
+
+    func renameDevice(id: String, name: String) async throws -> DeviceDetail {
+        try await updateDevice(id: id, patch: DevicePatch(name: name, isPrimary: nil))
+    }
+
+    /// Makes it its child's primary device: listed first and shown on the child's card.
+    func setPrimaryDevice(id: String) async throws -> DeviceDetail {
+        try await updateDevice(id: id, patch: DevicePatch(name: nil, isPrimary: true))
+    }
+
+    func unpairDevice(id: String, confirmation: DeletionConfirmation) async throws {
+        try await unpairDevice(id: id, confirmation: confirmation, deleteHistory: false)
+    }
 }

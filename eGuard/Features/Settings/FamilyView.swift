@@ -122,7 +122,7 @@ struct FamilyView: View {
                 InlineError(message: errorMessage)
 
                 if !family.canManage {
-                    Text("Only the family admin can invite or remove parents.")
+                    Text("Only the family admin can invite or remove parents, or rename the family.")
                         .font(EGuardTypography.caption)
                         .foregroundStyle(EGuardColors.textSecondary)
                 }
@@ -302,7 +302,7 @@ struct FamilyView: View {
     NavigationStack {
         FamilyView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

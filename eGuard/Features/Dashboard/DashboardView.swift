@@ -15,6 +15,7 @@ struct DashboardView: View {
                 OfflineBanner(lastVerified: nil)
             }
             VerifyEmailBanner()
+            PlanLapsedBanner()
 
             if let error = model.refreshError {
                 ErrorCard(message: error) { Task { await model.refreshDashboard() } }
@@ -265,7 +266,7 @@ struct APIAlertRow: View {
     NavigationStack {
         DashboardView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

@@ -86,6 +86,6 @@ struct AboutView: View {
     NavigationStack {
         AboutView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
 }
 #endif

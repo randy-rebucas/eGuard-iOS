@@ -44,6 +44,10 @@ final class AppModel {
     private(set) var user: APIUser?
     private(set) var appInfo: AppInfo?
     private(set) var dashboard: Dashboard?
+    /// `GET /subscription`, refreshed with the dashboard so screens can mark what the plan doesn't include
+    /// before the server refuses it. Nil until the first refresh or when the call fails; the server enforces
+    /// the plan either way.
+    private(set) var subscription: SubscriptionInfo?
     private(set) var unreadAlerts = 0
     private(set) var bootstrapState: BootstrapState = .idle
     private(set) var pushToken: String?
@@ -141,25 +145,9 @@ final class AppModel {
 
     // MARK: Factories
 
-    /// Builds the model for the current process. UI tests and previews get mocks (Debug builds only:
-    /// the mock server isn't compiled into Release, so `-uiTesting` does nothing there).
-    static func make(arguments: [String] = ProcessInfo.processInfo.arguments) -> AppModel {
-        #if DEBUG
-        if arguments.contains("-uiTesting") {
-            let seeded = arguments.contains("-setupComplete")
-            let model = mock(
-                api: seeded ? .seeded() : .empty(),
-                signedIn: seeded,
-                // UI tests start on the parent side unless they ask for the mode chooser.
-                mode: arguments.contains("-modeUnset") ? .unset : .parent,
-                authorizationStatus: seeded ? .approved : .notDetermined,
-                authorizationBehavior: arguments.contains("-denyAuthorization") ? .deny : .approve,
-                skipsSplash: true
-            )
-            return model
-        }
-        #endif
-        return live()
+    /// Builds the model for the current process: always the live API and the real system services.
+    static func make() -> AppModel {
+        live()
     }
 
     static func live() -> AppModel {
@@ -215,56 +203,6 @@ final class AppModel {
         return model
     }
 
-    #if DEBUG
-    static func mock(
-        api mockAPI: MockEGuardAPI? = nil,
-        signedIn: Bool = false,
-        mode: AppMode = .parent,
-        authorizationStatus: ParentalControlAuthorizationStatus = .notDetermined,
-        authorizationBehavior: MockAuthorizationService.Behavior = .approve,
-        environment: PlatformEnvironment = .iPhone,
-        skipsSplash: Bool = true
-    ) -> AppModel {
-        let api = mockAPI ?? .empty()
-        let sessionStore = SessionStore.inMemory()
-        if signedIn {
-            sessionStore.save(MockEGuardAPI.seededSession)
-        }
-        let authorization = MockAuthorizationService(status: authorizationStatus, behavior: authorizationBehavior)
-        let restrictions = MockRestrictionService()
-        let schedules = MockActivityScheduleService()
-        let deviceTokenStore = DeviceTokenStore.inMemory()
-        // Each mock model gets its own location reporter so parallel tests never share permission state.
-        let locationReporter = MockLocationReporter()
-        let childDevice = ChildDeviceModel(
-            api: MockDeviceAPI(server: api),
-            tokenStore: deviceTokenStore,
-            enforcer: ScreenTimeEnforcer(restrictions: restrictions, schedules: schedules, authorization: authorization, environment: environment, locationStatus: locationReporter),
-            store: ChildDeviceStore.inMemory(),
-            locationReporter: locationReporter,
-            usageSource: MockUsageSource(),
-            network: nil
-        )
-        let model = AppModel(
-            api: api,
-            sessionStore: sessionStore,
-            modeStore: ModeStore.inMemory(mode),
-            childDevice: childDevice,
-            authorization: authorization,
-            restrictions: restrictions,
-            schedules: schedules,
-            systemSettings: SystemSettingsOpener(),
-            repository: LocalStateRepository.inMemory(),
-            environment: environment,
-            skipsSplash: skipsSplash
-        )
-        if signedIn {
-            model.user = api.currentUser
-        }
-        return model
-    }
-    #endif
-
     // MARK: Mode
 
     /// Launch routing from the spec: a stored mode without its credential falls back to the chooser
@@ -307,16 +245,6 @@ final class AppModel {
         childDevice.forget()
         modeStore.set(.unset)
     }
-
-    #if DEBUG
-    /// A signed-in parent with a seeded family, for previews of the main app.
-    static func preview() -> AppModel {
-        let model = make(arguments: ["-uiTesting", "-setupComplete"])
-        // Previews render synchronously, so fetch the dashboard eagerly.
-        Task { await model.bootstrap() }
-        return model
-    }
-    #endif
 
     // MARK: Launch
 
@@ -367,7 +295,15 @@ final class AppModel {
         user = dashboard.user
         unreadAlerts = dashboard.unreadAlerts
         refreshError = nil
+        // Plan state rides along with the dashboard. A failure here keeps the last known plan: the Home tab
+        // must not fail because the plan couldn't be read.
+        if let subscription = try? await api.subscription() {
+            self.subscription = subscription
+        }
     }
+
+    /// What the current plan includes, once known. Views use this to badge locked features neutrally.
+    var entitlements: PlanEntitlements? { subscription?.entitlements }
 
     func refreshUnreadCount() async {
         if let count = try? await api.unreadCount() {
@@ -383,6 +319,11 @@ final class AppModel {
         if let user = try? await api.me() {
             self.user = user
         }
+    }
+
+    /// Adopts a user the caller already holds, instead of fetching `GET /me` again.
+    func adoptUser(_ user: APIUser) {
+        self.user = user
     }
 
     // MARK: Account
@@ -488,6 +429,7 @@ final class AppModel {
         sessionStore.clear()
         user = nil
         dashboard = nil
+        subscription = nil
         unreadAlerts = 0
         refreshError = nil
         sessionEndedMessage = reason

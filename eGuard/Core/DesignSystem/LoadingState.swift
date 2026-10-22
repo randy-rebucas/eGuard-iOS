@@ -77,6 +77,30 @@ struct InlineError: View {
     }
 }
 
+/// Banner shown once the plan has lapsed and the family is back on Free. Neutral by design: it explains
+/// what still works and what doesn't, with no price, upgrade prompt, or link to the website.
+struct PlanLapsedBanner: View {
+    @Environment(AppModel.self) private var model
+    @Environment(AppRouter.self) private var router
+
+    var body: some View {
+        if let subscription = model.subscription, subscription.isExpired {
+            EGuardCard {
+                Label("Your plan has ended", systemImage: "calendar.badge.exclamationmark")
+                    .font(EGuardTypography.headline)
+                    .foregroundStyle(EGuardColors.warning)
+                Text("Your family is on the Free plan now. Protections keep working on the children and devices you've already set up, but new ones can't be added over the Free limits, and features outside the plan are marked in the app.")
+                    .font(EGuardTypography.caption)
+                    .foregroundStyle(EGuardColors.textSecondary)
+                Button("View your plan") { router.push(.subscription) }
+                    .buttonStyle(.eGuardSecondary)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("plan.lapsed")
+        }
+    }
+}
+
 /// Banner shown while the parent's email is unverified.
 struct VerifyEmailBanner: View {
     @Environment(AppModel.self) private var model

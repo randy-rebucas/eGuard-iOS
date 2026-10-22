@@ -92,7 +92,7 @@ struct WelcomeView: View {
     NavigationStack {
         WelcomeView()
     }
-    .environment(AppModel.mock())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

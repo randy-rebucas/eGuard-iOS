@@ -1,4 +1,5 @@
 import Foundation
+@testable import eGuard
 
 // Debug only: the mock server never ships in a Release build.
 #if DEBUG

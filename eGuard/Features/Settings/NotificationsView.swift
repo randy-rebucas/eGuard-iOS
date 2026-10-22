@@ -43,10 +43,11 @@ struct NotificationsView: View {
             case .loaded(let prefs):
                 EGuardCard {
                     SectionHeader(title: "What eGuard sends you")
-                    // Off and locked on a plan without push, whatever the stored (default on) value says
-                    let pushIncluded = prefs.pushIncluded ?? true
+                    // Off and locked on a plan without push, whatever the stored (default on) value says. The prefs
+                    // carry `pushIncluded`; older servers don't, so fall back to the plan's entitlements.
+                    let pushIncluded = prefs.pushIncluded ?? model.entitlements?.hasRealtimeAlerts ?? true
                     toggle("Push alerts", detail: pushIncluded ? "Protection changes, device issues, approvals" : "Not included in your plan. Alerts still show here and by email.",
-                           symbol: "iphone.radiowaves.left.and.right", tint: EGuardColors.primary, value: prefs.notifyPush && pushIncluded, enabled: pushIncluded) { NotificationPrefsPatch(notifyPush: $0) }
+                           symbol: "iphone.radiowaves.left.and.right", tint: pushIncluded ? EGuardColors.primary : EGuardColors.neutral, value: prefs.notifyPush && pushIncluded, enabled: pushIncluded) { NotificationPrefsPatch(notifyPush: $0) }
                     Divider()
                     toggle("Email alerts", detail: "The same alerts by email", symbol: "envelope.fill", tint: EGuardColors.tileTeal, value: prefs.notifyEmail) { NotificationPrefsPatch(notifyEmail: $0) }
                     Divider()
@@ -142,7 +143,7 @@ struct NotificationsView: View {
     NavigationStack {
         NotificationsView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

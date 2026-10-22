@@ -527,6 +527,46 @@ struct PlanGatingTests {
         #expect(try await api.apps(childId: mia.id, filter: .pending).apps.contains { $0.name == "Snapchat" } == false)
     }
 
+    @Test func aLapsedPlanKeepsTheFamilyButBlocksAdditions() async throws {
+        // The server moved the family back to Free: 1 child, 2 device slots, no location, no push.
+        let api = MockEGuardAPI.seeded()
+        let model = AppModel.mock(api: api)
+        try await model.signIn(email: "randy@example.com", password: "ChangeMe123!")
+        #expect(model.subscription?.isActive == true)
+        #expect(model.entitlements?.hasRealtimeAlerts == true)
+
+        api.subscriptionStatus = "EXPIRED"
+        api.entitlements = PlanEntitlements(childLimit: 1, deviceLimit: 2, locationSharing: false, appMonitoringLimit: 3, realtimeAlerts: false, advancedReports: false, apiAccess: false)
+        await model.refreshDashboard()
+
+        // The dashboard still lists everyone; the plan state is known to the app for the banner and badges.
+        #expect(model.children.count == 3)
+        #expect(model.subscription?.isExpired == true)
+        #expect(model.entitlements?.hasRealtimeAlerts == false)
+        #expect(model.entitlements?.hasLocationSharing == false)
+
+        // Over the Free limits: nothing new, with the spec's codes so the screens can word it.
+        await #expect(throws: APIError.self) { _ = try await api.createChild(name: "Noah", age: 7, profile: nil) }
+        do {
+            _ = try await api.pairingCode(childId: try #require(model.children.first?.id))
+            Issue.record("Expected the device limit")
+        } catch let error as APIError {
+            #expect(error.status == 409 && error.code == "plan_limit")
+        }
+
+        // Signing out forgets the plan with the rest of the session.
+        model.handleUnauthorized()
+        #expect(model.subscription == nil)
+    }
+
+    @Test func missingEntitlementFlagsLockRatherThanUnlock() throws {
+        // The spec marks these required; a server that omits one must not unlock the feature by accident.
+        let bare = PlanEntitlements(childLimit: 1, deviceLimit: 2, locationSharing: nil, appMonitoringLimit: nil, realtimeAlerts: nil, advancedReports: nil, apiAccess: nil)
+        #expect(!bare.hasLocationSharing && !bare.hasRealtimeAlerts && !bare.hasAdvancedReports)
+        let decoded = try JSONDecoder().decode(PlanEntitlements.self, from: Data(#"{"childLimit":5,"deviceLimit":10,"locationSharing":true}"#.utf8))
+        #expect(decoded.hasLocationSharing && !decoded.hasAdvancedReports)
+    }
+
     @Test func familyAndSubscriptionShareEntitlements() async throws {
         let api = MockEGuardAPI.seeded()
         let family = try await api.family()
@@ -811,9 +851,11 @@ struct AlertTests {
     }
 
     @Test func mergeDropsSameDayDuplicatesAndSortsNewestFirst() {
-        let older = ProtectionAlert(category: .protection, title: "Downtime not configured", detail: "x", date: .now.addingTimeInterval(-600), feature: .downtime)
-        let duplicate = ProtectionAlert(category: .protection, title: "Downtime not configured", detail: "x", date: .now, feature: .downtime)
-        let other = ProtectionAlert(category: .location, title: "Location sharing turned on", detail: "x", date: .now)
+        // Fixed to midday so the "same day" rule holds even when the test runs just after midnight.
+        let noon = Calendar.current.startOfDay(for: .now).addingTimeInterval(12 * 3600)
+        let older = ProtectionAlert(category: .protection, title: "Downtime not configured", detail: "x", date: noon.addingTimeInterval(-600), feature: .downtime)
+        let duplicate = ProtectionAlert(category: .protection, title: "Downtime not configured", detail: "x", date: noon, feature: .downtime)
+        let other = ProtectionAlert(category: .location, title: "Location sharing turned on", detail: "x", date: noon.addingTimeInterval(60))
         let merged = AlertGenerator.merge([duplicate, other], into: [older])
         #expect(merged.count == 2)
         #expect(merged.first?.title == "Location sharing turned on")

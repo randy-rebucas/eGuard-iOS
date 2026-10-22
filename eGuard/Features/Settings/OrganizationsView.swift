@@ -189,7 +189,7 @@ struct OrganizationsView: View {
     NavigationStack {
         OrganizationsView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

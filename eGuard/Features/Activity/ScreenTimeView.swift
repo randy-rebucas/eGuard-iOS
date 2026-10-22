@@ -305,7 +305,7 @@ struct ScreenTimeView: View {
     NavigationStack {
         ScreenTimeView(childId: "child_1")
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

@@ -16,19 +16,24 @@ final class SetupProgressViewModel {
     let childId: String
     let profile: String
     let overrides: [JSONValue]
+    /// Category limits ("Gaming time") to set with the profile, when the plan has them.
+    let categoryLimits: [CategoryLimitUpdate]?
     let poller = BatchPoller()
 
     private(set) var stage: Stage = .loadingChild
     private(set) var child: ChildDetail?
     private(set) var setup: SetupResponse?
+    /// True when the plan refused the category limits, so the protections were sent without them.
+    private(set) var categoryLimitsSkipped = false
     var isShowingPairing = false
     var guideItem: BatchItem?
     var errorMessage: String?
 
-    init(childId: String, profile: String, overrides: [JSONValue]) {
+    init(childId: String, profile: String, overrides: [JSONValue], categoryLimits: [CategoryLimitUpdate]? = nil) {
         self.childId = childId
         self.profile = profile
         self.overrides = overrides
+        self.categoryLimits = categoryLimits
     }
 
     var hasDevice: Bool { (child?.devices.isEmpty == false) }
@@ -68,7 +73,7 @@ final class SetupProgressViewModel {
     func send(api: EGuardAPIService) async {
         stage = .sending
         do {
-            let response = try await api.setup(childId: childId, profile: profile, overrides: overrides)
+            let response = try await api.setup(childId: childId, profile: profile, overrides: overrides, categoryLimits: categoryLimitsSkipped ? nil : categoryLimits)
             setup = response
             if let batchId = response.batchId {
                 stage = .tracking
@@ -76,6 +81,10 @@ final class SetupProgressViewModel {
             } else {
                 stage = .saved(response.saved)
             }
+        } catch let error as APIError where error.code == "plan_required" && categoryLimits != nil && !categoryLimitsSkipped {
+            // The plan has no category limits. The server changed nothing, so send the protections without them.
+            categoryLimitsSkipped = true
+            await send(api: api)
         } catch {
             stage = .failed(error.localizedDescription)
         }
@@ -110,8 +119,8 @@ struct SetupProgressView: View {
     @Environment(AppRouter.self) private var router
     @State private var viewModel: SetupProgressViewModel
 
-    init(childId: String, profile: String, overrides: [JSONValue]) {
-        _viewModel = State(initialValue: SetupProgressViewModel(childId: childId, profile: profile, overrides: overrides))
+    init(childId: String, profile: String, overrides: [JSONValue], categoryLimits: [CategoryLimitUpdate]? = nil) {
+        _viewModel = State(initialValue: SetupProgressViewModel(childId: childId, profile: profile, overrides: overrides, categoryLimits: categoryLimits))
     }
 
     var body: some View {
@@ -159,6 +168,17 @@ struct SetupProgressView: View {
                 pollerStatus
             case .failed(let message):
                 ErrorCard(message: message) { Task { await viewModel.start(api: model.api) } }
+            }
+
+            if viewModel.categoryLimitsSkipped {
+                EGuardCard {
+                    Label("Category limits weren't applied", systemImage: "gamecontroller.fill")
+                        .font(EGuardTypography.headline)
+                        .foregroundStyle(EGuardColors.textSecondary)
+                    Text(APIClient.storeSafeMessage("They aren't included in your plan. Every protection was still set up.", status: 403))
+                        .font(EGuardTypography.caption)
+                        .foregroundStyle(EGuardColors.textSecondary)
+                }
             }
 
             InlineError(message: viewModel.errorMessage)
@@ -443,7 +463,7 @@ struct GuidedStepsSheet: View {
     NavigationStack {
         SetupProgressView(childId: "child_1", profile: "PROTECTED", overrides: [])
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

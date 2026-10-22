@@ -123,7 +123,7 @@ struct CompleteView: View {
     NavigationStack {
         CompleteView(childId: "child_1", batchId: nil)
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

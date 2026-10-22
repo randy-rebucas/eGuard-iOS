@@ -15,6 +15,10 @@ final class ProtectionEditorViewModel {
     /// "Saved. It applies when … is paired" for a child with no device yet.
     var notice: String?
     var guideItem: BatchItem?
+    /// True after a save the server only stored, because the child has no device to verify it yet.
+    var savedWithoutDevice = false
+    /// True after a `409 stale`: someone else changed this protection since it was loaded.
+    var wasReplacedByOthers = false
 
     init(childId: String, key: String) {
         self.childId = childId
@@ -56,18 +60,27 @@ final class ProtectionEditorViewModel {
         }
         isSaving = true
         defer { isSaving = false }
+        savedWithoutDevice = false
+        wasReplacedByOthers = false
+        notice = nil
         do {
-            // The version the parent saw: another parent's change since then is refused, not silently undone
-            let result = try await api.updateProtection(childId: childId, key: key, config: config, baseVersion: protection?.version)
-            errorMessage = nil
-            switch result {
-            case .queued(let batch):
-                notice = nil
+            // `baseVersion` makes the server refuse to overwrite a change another parent made since this loaded.
+            switch try await api.updateProtection(childId: childId, key: key, config: config, baseVersion: protection?.version) {
+            case .batch(let batch):
+                errorMessage = nil
                 poller.start(batchId: batch.batchId, api: api, initial: batch)
-            case .savedForPairing:
+            case .saved:
+                // Stored only: the child has no device to verify it yet. Say "Saved", never "verified".
+                errorMessage = nil
+                savedWithoutDevice = true
                 notice = "Saved. It applies when a device is paired."
                 await refresh(api: api)
             }
+        } catch let error as APIError where error.code == "stale" {
+            // Show the parent what's there now rather than replacing it.
+            errorMessage = error.localizedDescription
+            wasReplacedByOthers = true
+            await load(api: api)
         } catch {
             errorMessage = error.localizedDescription
             // Changed elsewhere, or no device supports it: show what's there now
@@ -123,6 +136,27 @@ struct ProtectionEditorView: View {
             case .loaded(let protection):
                 header(protection)
                 progressCard
+                if viewModel.savedWithoutDevice {
+                    EGuardCard {
+                        Label("Saved", systemImage: "checkmark.circle.fill")
+                            .font(EGuardTypography.headline)
+                            .foregroundStyle(EGuardColors.success)
+                        Text("It applies when \(childName)'s device is paired. Nothing can verify it until then.")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
+                    .accessibilityIdentifier("feature.savedWithoutDevice")
+                }
+                if viewModel.wasReplacedByOthers {
+                    EGuardCard {
+                        Label("Changed by someone else", systemImage: "person.2.fill")
+                            .font(EGuardTypography.headline)
+                            .foregroundStyle(EGuardColors.warning)
+                        Text("This now shows the current setting. Make your change again if you still want it.")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
+                }
                 if protection.isUnsupportedEverywhere {
                     EGuardCard {
                         Label("Not supported on \(protection.devices.map(\.deviceName).joined(separator: ", "))", systemImage: "minus.circle.fill")
@@ -143,7 +177,8 @@ struct ProtectionEditorView: View {
                 }
                 devicesCard(protection)
             }
-            if let notice = viewModel.notice {
+            // The "Saved" card above already covers a save without a device; this line is for any other notice.
+            if let notice = viewModel.notice, !viewModel.savedWithoutDevice {
                 Text(notice)
                     .font(EGuardTypography.callout)
                     .foregroundStyle(EGuardColors.success)
@@ -206,6 +241,10 @@ struct ProtectionEditorView: View {
             GuidedStepsSheet(item: item) { Task { await viewModel.confirm(api: model.api) } }
                 .presentationDetents([.medium, .large])
         }
+    }
+
+    private var childName: String {
+        model.children.first { $0.id == viewModel.childId }?.name ?? "your child"
     }
 
     private var formHeight: CGFloat {
@@ -340,7 +379,7 @@ struct ProtectionEditorView: View {
     NavigationStack {
         ProtectionEditorView(childId: "child_1", key: "BEDTIME")
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

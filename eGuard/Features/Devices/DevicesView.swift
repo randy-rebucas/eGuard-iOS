@@ -148,7 +148,9 @@ struct DevicesView: View {
                             .font(EGuardTypography.caption)
                             .foregroundStyle(EGuardColors.textSecondary)
                         HStack(spacing: EGuardSpacing.xs) {
+                            // A just-paired device shows "Waiting for first check" instead of its issue count.
                             StatusPill(text: device.statusTitle, tint: deviceTint(device))
+                            if device.isPrimary { StatusPill(text: "Primary", tint: EGuardColors.tilePurple) }
                             if let battery = device.battery {
                                 Label("\(battery)%", systemImage: battery > 20 ? "battery.75percent" : "battery.25percent")
                                     .font(EGuardTypography.caption)
@@ -182,13 +184,9 @@ struct DevicesView: View {
                             Text([browser.childName, browser.detail.isEmpty ? nil : browser.detail, browser.lastSeenAt.map { "Seen \($0.relativeDescription())" }].compactMap { $0 }.joined(separator: " · "))
                                 .font(EGuardTypography.caption)
                                 .foregroundStyle(EGuardColors.textSecondary)
-                            StatusPill(text: browser.statusLabel, tint: color)
-                            // Only when something needs doing: a healthy browser's note just repeats its label
-                            if let note = browser.status?.note, browser.status?.tone == "warn" || browser.status?.tone == "crit" {
-                                Text(note)
-                                    .font(EGuardTypography.caption)
-                                    .foregroundStyle(color)
-                            }
+                            // The extension's own health check; "Not seen for a day" when it can't be confirmed,
+                            // "Disconnected" when eGuard cut it off for security.
+                            StatusPill(text: browser.connected ? browser.stateLabel : "Disconnected", tint: color)
                         }
                         Spacer()
                         Menu {
@@ -222,13 +220,12 @@ struct DevicesView: View {
     }
 
     private func browserTint(_ browser: ConnectedBrowser) -> Color {
-        guard let tone = browser.status?.tone else { return browser.connected ? EGuardColors.tileTeal : EGuardColors.danger }
-        return switch tone {
-        case "ok": EGuardColors.success
-        case "warn": EGuardColors.warning
-        case "crit": EGuardColors.danger
-        case "accent": EGuardColors.primary
-        default: EGuardColors.neutral
+        guard browser.connected else { return EGuardColors.danger }
+        return switch browser.stateTint {
+        case .good: EGuardColors.success
+        case .warning: EGuardColors.warning
+        case .bad: EGuardColors.danger
+        case .neutral: EGuardColors.neutral
         }
     }
 }
@@ -285,7 +282,10 @@ struct DeviceDetailView: View {
                             Text([detail.model, detail.osVersion].compactMap { $0 }.joined(separator: " · "))
                                 .font(EGuardTypography.caption)
                                 .foregroundStyle(EGuardColors.textSecondary)
-                            StatusPill(text: detail.device.statusTitle, tint: deviceTint(detail.device))
+                            HStack(spacing: EGuardSpacing.xs) {
+                                StatusPill(text: detail.device.statusTitle, tint: deviceTint(detail.device))
+                                if detail.isPrimary { StatusPill(text: "Primary", tint: EGuardColors.tilePurple) }
+                            }
                         }
                         Spacer()
                     }
@@ -303,6 +303,10 @@ struct DeviceDetailView: View {
                         Text("This device hasn't synced in over a day. Its protections show their last known state until it reconnects.")
                             .font(EGuardTypography.caption)
                             .foregroundStyle(EGuardColors.warning)
+                    } else if detail.device.isAwaitingFirstCheck {
+                        Text("Waiting for this device's first check. Protections count as issues until it reports what it really has.")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
                     }
                 }
 
@@ -348,11 +352,13 @@ struct DeviceDetailView: View {
                     Button("Make Primary Device") { Task { await makePrimary() } }
                         .buttonStyle(.eGuardSecondary)
                         .disabled(isBusy)
+                        .accessibilityIdentifier("device.makePrimary")
                 }
                 if !otherChildren.isEmpty {
                     Button("Move to Another Child") { isChoosingChild = true }
                         .buttonStyle(.eGuardSecondary)
                         .disabled(isBusy)
+                        .accessibilityIdentifier("device.move")
                 }
                 Button("Remove Device", role: .destructive) { isChoosingRemoval = true }
                     .buttonStyle(.eGuardText)
@@ -374,17 +380,16 @@ struct DeviceDetailView: View {
         }
         .confirmationDialog("Move \(state.value?.name ?? "this device") to…", isPresented: $isChoosingChild, titleVisibility: .visible) {
             ForEach(otherChildren) { child in
-                Button(child.name) {
-                    moveTarget = child
-                }
+                // After the dialog has closed, so the password alert can present
+                Button(child.name) { afterDialog { moveTarget = child } }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("It gets the new child's protections and apps on its next sync, and eGuard checks them again then. What it recorded stays in \(state.value?.childName ?? "the child")'s reports and history.")
+            Text("It gets the new child's protections and apps on its next sync, without pairing again, and eGuard checks them again then. What it recorded stays in \(state.value?.childName ?? "the child")'s reports and history.")
         }
         .deletionConfirmation(
             "Move to \(moveTarget?.name ?? "another child")?",
-            message: "Other parents in your family are told.",
+            message: "Its reported protections are cleared until it reports again, open changes are cancelled, and the family gets a \"Device moved\" alert.",
             confirmTitle: "Move",
             isPresented: Binding(get: { moveTarget != nil }, set: { if !$0 { moveTarget = nil } }),
             user: model.user
@@ -392,26 +397,29 @@ struct DeviceDetailView: View {
             if let child = moveTarget { Task { await move(to: child, confirmation) } }
         }
         .confirmationDialog("Remove \(state.value?.name ?? "this device")?", isPresented: $isChoosingRemoval, titleVisibility: .visible) {
-            Button("Remove, Keep What It Recorded", role: .destructive) {
-                deleteHistory = false
-                isConfirmingUnpair = true
-            }
-            Button("Remove and Delete What It Recorded", role: .destructive) {
-                deleteHistory = true
-                isConfirmingUnpair = true
-            }
+            // "Also delete what it recorded" is an option, off by default.
+            Button("Remove, Keep What It Recorded", role: .destructive) { afterDialog { deleteHistory = false; isConfirmingUnpair = true } }
+            Button("Remove and Delete What It Recorded", role: .destructive) { afterDialog { deleteHistory = true; isConfirmingUnpair = true } }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The eGuard app on it stops applying your settings, and eGuard stops checking it. Its screen time, app usage and places can stay in your child's reports and history, or be deleted (that can't be undone).")
+            Text("The eGuard app on it stops applying your settings, and eGuard stops checking it. Its screen time, app usage and places can stay in your child's reports and history until your plan's retention period ends, or be deleted (that can't be undone).")
         }
         .deletionConfirmation(
-            deleteHistory ? "Remove and delete its history?" : "Remove this device?",
-            message: "The family gets a \"Device removed\" alert.",
+            deleteHistory ? "Remove this device and delete what it recorded?" : "Remove this device?",
+            message: "The device clears its protections at its next check-in, and the family gets a \"Device removed\" alert.",
             confirmTitle: "Remove",
             isPresented: $isConfirmingUnpair,
             user: model.user
         ) { confirmation in
             Task { await unpair(confirmation) }
+        }
+    }
+
+    /// Runs after a confirmation dialog has closed, so the next alert can present.
+    private func afterDialog(_ action: @escaping () -> Void) {
+        Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            action()
         }
     }
 
@@ -471,7 +479,7 @@ struct DeviceDetailView: View {
     NavigationStack {
         DevicesView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

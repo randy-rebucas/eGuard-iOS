@@ -139,7 +139,7 @@ struct PrivacyView: View {
     NavigationStack {
         PrivacyView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

@@ -483,7 +483,7 @@ struct DeleteAccountView: View {
     NavigationStack {
         AccountView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

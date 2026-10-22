@@ -121,14 +121,14 @@ struct RootView: View {
         case .editChild(let childId): AddChildView(childId: childId)
         case .protectionProfile(let childId): ProtectionProfileView(childId: childId)
         case .recommendedSetup(let childId, let profile): RecommendedSetupView(childId: childId, profile: profile)
-        case .setupProgress(let childId, let profile, let overrides): SetupProgressView(childId: childId, profile: profile, overrides: overrides)
+        case .setupProgress(let childId, let profile, let overrides, let categoryLimits): SetupProgressView(childId: childId, profile: profile, overrides: overrides, categoryLimits: categoryLimits)
         case .healthCheck(let childId, let isOnboarding): HealthCheckView(childId: childId, isOnboarding: isOnboarding)
         case .complete(let childId, let batchId): CompleteView(childId: childId, batchId: batchId)
         case .protections(let childId): ProtectionsView(childId: childId)
         case .protectionEditor(let childId, let key): ProtectionEditorView(childId: childId, key: key)
         case .childProfile(let childId): ChildProfileView(childId: childId)
         case .screenTime(let childId): ScreenTimeView(childId: childId)
-        case .appsManagement(let childId, let pending): AppsManagementView(childId: childId, startPending: pending)
+        case .appsManagement(let childId, let pending, let requestId): AppsManagementView(childId: childId, startPending: pending, requestId: requestId)
         case .location(let childId): LocationView(childId: childId)
         case .deviceDetail(let deviceId): DeviceDetailView(deviceId: deviceId)
         case .browserPolicy(let childId): BrowserPolicyView(childId: childId)
@@ -183,20 +183,20 @@ struct UpdateRequiredView: View {
 #if DEBUG
 #Preview("Mode chooser") {
     RootView()
-        .environment(AppModel.mock(mode: .unset))
+        .environment(AppModel.live())
 }
 #endif
 
 #if DEBUG
 #Preview("Onboarding") {
     RootView()
-        .environment(AppModel.mock())
+        .environment(AppModel.live())
 }
 #endif
 
 #if DEBUG
 #Preview("Dashboard") {
     RootView()
-        .environment(AppModel.preview())
+        .environment(AppModel.live())
 }
 #endif

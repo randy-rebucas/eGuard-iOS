@@ -156,7 +156,7 @@ struct SignInView: View {
     NavigationStack {
         SignInView()
     }
-    .environment(AppModel.mock())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

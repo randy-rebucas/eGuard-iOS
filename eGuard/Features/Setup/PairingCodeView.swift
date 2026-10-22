@@ -13,11 +13,12 @@ struct PairingCodeView: View {
     @State private var deadline: Date?
     @State private var kind: CodeKind = .device
     @State private var browserLabel = ""
+    /// Set when the server refused the code with `403 email_unverified`, so the Resend banner shows.
+    @State private var needsVerification = false
     /// The device code, kept while the parent looks at the browser tab so coming back doesn't replace it.
     @State private var deviceCode: (code: PairingCode, deadline: Date)?
     /// The devices the child had when the sheet opened: a new id is the one that just paired.
     @State private var knownDevices: Set<String>?
-    @State private var emailUnverified = false
     /// A browser code is on its way: "Create browser code" ignores taps (each tap would make a code).
     @State private var isCreatingBrowserCode = false
 
@@ -53,7 +54,7 @@ struct PairingCodeView: View {
                     LoadingCard(message: "Creating a code…")
                 case .failed(let message):
                     ErrorCard(message: message) { Task { await requestCode() } }
-                    if emailUnverified {
+                    if needsVerification {
                         VerifyEmailBanner()
                     }
                 case .loaded(let code) where code.isBrowserCode == (kind == .browser):
@@ -128,16 +129,6 @@ struct PairingCodeView: View {
                         }
                     }
                 }
-
-                #if DEBUG
-                if kind == .device, let mock = model.api as? MockEGuardAPI {
-                    Button("Simulate device pairing (test server)") {
-                        mock.simulatePairing(childId: childId)
-                    }
-                    .buttonStyle(.eGuardSecondary)
-                    .accessibilityIdentifier("pairing.simulate")
-                }
-                #endif
             } actions: {
                 Button(isPaired ? "Done" : "Close") { dismiss() }
                     .buttonStyle(isPaired ? AnyButtonStyle(.eGuardPrimary) : AnyButtonStyle(.eGuardSecondary))
@@ -183,21 +174,31 @@ struct PairingCodeView: View {
         }
         defer { if browser { isCreatingBrowserCode = false } }
         state = .loading
-        emailUnverified = false
+        needsVerification = false
         let label = browserLabel.trimmingCharacters(in: .whitespaces)
         do {
             let code = browser
                 ? try await model.api.browserPairingCode(childId: childId, deviceLabel: label)
                 : try await model.api.pairingCode(childId: childId)
-            let end = code.expiresInSeconds.map { Date.now.addingTimeInterval(TimeInterval($0)) } ?? code.expiresAt
+            // Count down from `expiresInSeconds`, measured from now on this phone's clock (which may be off).
+            // The countdown is computed from this deadline, not decremented per poll tick.
+            let end = Date.now.addingTimeInterval(TimeInterval(code.secondsRemaining))
             deadline = end
             if !browser { deviceCode = (code, end) }
             state = .loaded(code)
+        } catch let error as APIError where error.code == "email_unverified" {
+            needsVerification = true
+            state = .failed(error.localizedDescription)
+        } catch let error as APIError where error.code == "plan_limit" || error.status == 409 {
+            // Every device slot on the plan is taken, including browsers (and after a lapse back to Free).
+            state = .failed(Self.deviceLimitMessage)
         } catch {
-            emailUnverified = (error as? APIError)?.code == "email_unverified"
             state = .failed(error.localizedDescription)
         }
     }
+
+    /// Shown when `POST /children/{id}/pairing-code` answers `409`. Neutral: no upgrade wording.
+    static let deviceLimitMessage = "No free device slots on your plan. Remove a device or browser on the Devices tab, then create a new code. Contact support if you need to change your plan."
 
     /// Polls the child while a phone code is valid, until a device that wasn't there before appears.
     private func pollForDevice() async {
@@ -242,7 +243,7 @@ struct AnyButtonStyle: ButtonStyle {
 #if DEBUG
 #Preview {
     PairingCodeView(childId: "child_1")
-        .environment(AppModel.preview())
+        .environment(AppModel.live())
         .environment(AppRouter())
 }
 #endif

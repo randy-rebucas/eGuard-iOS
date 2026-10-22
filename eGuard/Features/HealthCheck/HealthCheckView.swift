@@ -249,7 +249,7 @@ private struct HealthTitle: ViewModifier {
     NavigationStack {
         HealthCheckView(childId: nil, isOnboarding: false)
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }
 #endif

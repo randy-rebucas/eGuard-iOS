@@ -162,6 +162,25 @@ struct APIClientTests {
         #expect(APIClient.storeSafeMessage("Only the family admin can do that.", status: 403, code: "forbidden") == "Only the family admin can do that.")
     }
 
+    @Test func planRequiredMessagesNeverInviteAnUpgradeEither() async {
+        // 403 plan_required is the other place the server could mention a plan by name or price.
+        let (client, _) = makeClient()
+        StubURLProtocol.handler = { _ in (403, Data(#"{"error":"Location sharing is included with eGuard Plus (₱149/month).","code":"plan_required"}"#.utf8)) }
+        do {
+            _ = try await client.send(.get("locations"), as: FamilyLocations.self)
+            Issue.record("Expected a 403")
+        } catch let error as APIError {
+            #expect(error.status == 403)
+            #expect(error.code == "plan_required")
+            #expect(error.localizedDescription == APIClient.planFeatureMessage)
+        } catch {
+            Issue.record("Unexpected error \(error)")
+        }
+        // Other 403s keep their wording: only selling language is replaced.
+        #expect(APIClient.storeSafeMessage("Verify your email before pairing a device.", status: 403) == "Verify your email before pairing a device.")
+        #expect(APIClient.storeSafeMessage("Saved places aren't included in your plan.", status: 403) == "Saved places aren't included in your plan.")
+    }
+
     @Test func missingTokenFailsBeforeTheNetwork() async {
         let (client, _) = makeClient(signedIn: false)
         await #expect(throws: APIError.notSignedIn) {
