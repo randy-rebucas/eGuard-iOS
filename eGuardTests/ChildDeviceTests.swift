@@ -56,7 +56,7 @@ struct ChildDeviceTests {
         #expect(protections.first { $0.key == "NOTIFICATIONS" }?.devices.first { $0.deviceName == "Lucas's iPad" }?.status == .unsupported)
 
         // A parent changes bedtime; the device picks it up on its next sync and reports it back.
-        let batch = try await api.updateProtection(childId: childId, key: "BEDTIME", config: .object(["enabled": .bool(true), "start": .string("21:00"), "end": .string("06:30"), "days": .string("SCHOOL_NIGHTS")]))
+        let batch = try #require(try await api.updateProtection(childId: childId, key: "BEDTIME", config: .object(["enabled": .bool(true), "start": .string("21:00"), "end": .string("06:30"), "days": .string("SCHOOL_NIGHTS")])).batch)
         await device.syncNow()
         let updated = try await api.batch(id: batch.batchId)
         let request = try #require(updated.items.first?.devices.first { $0.deviceName == "Lucas's iPad" })

@@ -44,14 +44,3 @@ final class AppGroupUsageSource: UsageSource {
         return UsageRequest(date: date, totalMinutes: min(max(minutes, 0), 1440), apps: nil, hourly: nil)
     }
 }
-
-/// A controllable source for previews and tests.
-final class MockUsageSource: UsageSource {
-    var usage: UsageRequest?
-
-    init(usage: UsageRequest? = nil) {
-        self.usage = usage
-    }
-
-    func pendingUsage() -> UsageRequest? { usage }
-}

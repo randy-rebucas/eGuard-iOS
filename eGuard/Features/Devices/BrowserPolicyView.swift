@@ -188,6 +188,6 @@ struct BrowserPolicyView: View {
     NavigationStack {
         BrowserPolicyView(childId: "child_3")
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

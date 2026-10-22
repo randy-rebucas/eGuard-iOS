@@ -21,7 +21,7 @@ nonisolated enum AppRoute: Hashable, Sendable {
     case editChild(childId: String)
     case protectionProfile(childId: String)
     case recommendedSetup(childId: String, profile: String)
-    case setupProgress(childId: String, profile: String, overrides: [JSONValue])
+    case setupProgress(childId: String, profile: String, overrides: [JSONValue], categoryLimits: [CategoryLimitUpdate]? = nil)
     case healthCheck(childId: String?, isOnboarding: Bool)
     case complete(childId: String, batchId: String?)
 
@@ -32,7 +32,8 @@ nonisolated enum AppRoute: Hashable, Sendable {
     // Child and activity
     case childProfile(childId: String)
     case screenTime(childId: String)
-    case appsManagement(childId: String)
+    /// `requestId` opens the Pending tab with that website request in view.
+    case appsManagement(childId: String, requestId: String? = nil)
     case location(childId: String)
     case deviceDetail(deviceId: String)
     case browserPolicy(childId: String)
@@ -133,7 +134,19 @@ final class AppRouter {
             if let childId = action.childId { push(.childProfile(childId: childId)) }
         case "MANAGE_SUBSCRIPTION":
             push(.subscription)
+        case "VIEW_LOCATION":
+            if let childId = action.childId { push(.location(childId: childId)) }
+        case "REVIEW_SITE_REQUEST":
+            if let childId = action.childId { push(.appsManagement(childId: childId, requestId: action.requestId)) }
+        case "VIEW_BROWSERS":
+            // With a child, that child's browser protection; without one, the family's browsers list.
+            if let childId = action.childId { push(.browserPolicy(childId: childId)) } else { show(.devices) }
+        case "VIEW_ORGANIZATIONS":
+            push(.organizations)
+        case "VIEW_FAMILY":
+            push(.family)
         default:
+            // Unknown types get no button (`AlertAction.isKnown`), so this is only reached by stale UI.
             break
         }
     }

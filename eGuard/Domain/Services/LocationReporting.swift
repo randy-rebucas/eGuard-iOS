@@ -77,25 +77,3 @@ final class CoreLocationReporter: NSObject, LocationReporting, CLLocationManager
         }
     }
 }
-
-/// A controllable implementation for previews, the simulator, and tests.
-@Observable
-final class MockLocationReporter: LocationReporting {
-    var isAuthorized = false
-    var isUndetermined = true
-    var fix: LocationFix? = LocationFix(lat: 10.6785, lng: 124.8006, accuracyM: 25, placeLabel: nil)
-    private(set) var fixesRequested = 0
-
-    init() {}
-
-    func requestPermission() async {
-        isUndetermined = false
-        isAuthorized = true
-    }
-
-    func currentFix() async -> LocationFix? {
-        guard isAuthorized else { return nil }
-        fixesRequested += 1
-        return fix
-    }
-}

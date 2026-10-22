@@ -283,6 +283,6 @@ struct CheckboxToggleStyle: ToggleStyle {
     NavigationStack {
         CreateAccountView()
     }
-    .environment(AppModel.mock())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

@@ -101,7 +101,7 @@ struct AlertsView: View {
 
     private func alertRow(_ alert: APIAlert) -> some View {
         VStack(alignment: .leading, spacing: EGuardSpacing.xs) {
-            APIAlertRow(alert: alert, action: alert.action == nil ? nil : { open(alert) })
+            APIAlertRow(alert: alert, action: alert.routableAction == nil ? nil : { open(alert) })
             if !alert.body.isEmpty {
                 Text(alert.body)
                     .font(EGuardTypography.caption)
@@ -115,7 +115,8 @@ struct AlertsView: View {
                     .padding(.leading, 48)
             }
             HStack(spacing: EGuardSpacing.sm) {
-                if let action = alert.action, !alert.resolved {
+                // No button for an action type this build doesn't know; new ones are added over time.
+                if let action = alert.routableAction, !alert.resolved {
                     Button(action.displayLabel) { open(alert) }
                         .font(EGuardTypography.label)
                         .foregroundStyle(EGuardColors.primary)
@@ -146,7 +147,7 @@ struct AlertsView: View {
                 model.setUnreadAlerts(unread)
             }
         }
-        if let action = alert.action { router.open(action) }
+        if let action = alert.routableAction { router.open(action) }
     }
 
     private func loadAlerts(reset: Bool) async {
@@ -168,6 +169,6 @@ struct AlertsView: View {
     NavigationStack {
         AlertsView(isRoot: true)
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

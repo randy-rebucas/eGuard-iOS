@@ -153,14 +153,19 @@ final class APIClient {
     /// Shown when a plan limit is hit. Neutral on purpose: no prices, no upgrade wording, no checkout link.
     static let planLimitMessage = "Your plan's limit has been reached. Contact support if you need to change your plan."
 
-    /// Replaces plan-limit messages that invite an upgrade. The server should already omit that wording
+    /// Shown when a feature is outside the plan (`403 plan_required`). Same rules: nothing is sold here.
+    static let planRequiredMessage = "This feature isn't included in your plan. Contact support if you need to change your plan."
+
+    /// Replaces plan messages that invite an upgrade. The server should already omit that wording
     /// for the iOS client; this is the safety net so a stray message can't get the app rejected.
+    /// Covers `409 plan_limit`, `402`, and `403 plan_required`: all three carry upgrade wording on other clients.
     static func storeSafeMessage(_ message: String, status: Int) -> String {
-        guard status == 409 || status == 402 else { return message }
+        guard status == 409 || status == 402 || status == 403 else { return message }
         let lowered = message.lowercased()
         let sellsSomething = lowered.contains("upgrade") || lowered.contains("subscribe") || lowered.contains("₱")
             || lowered.contains("per month") || lowered.contains("/month") || lowered.contains("eguard plus") || lowered.contains("eguard family")
-        return sellsSomething ? planLimitMessage : message
+        guard sellsSomething else { return message }
+        return status == 403 ? planRequiredMessage : planLimitMessage
     }
 
     private static func networkMessage(for error: Error) -> String {

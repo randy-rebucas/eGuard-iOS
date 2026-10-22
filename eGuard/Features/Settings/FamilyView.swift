@@ -12,6 +12,8 @@ struct FamilyView: View {
     @State private var message: String?
     @State private var errorMessage: String?
     @State private var isSending = false
+    @State private var isRenaming = false
+    @State private var newFamilyName = ""
 
     var body: some View {
         EGuardScreen {
@@ -22,6 +24,17 @@ struct FamilyView: View {
                 ErrorCard(message: error) { Task { await loadFamily() } }
             case .loaded(let family):
                 ScreenHeader(title: family.name, subtitle: subtitle(family))
+
+                // The name appears in invitations and the weekly summary. Admin only; read-only otherwise.
+                if family.canManage {
+                    Button("Rename family") {
+                        newFamilyName = family.name
+                        isRenaming = true
+                    }
+                    .font(EGuardTypography.label)
+                    .foregroundStyle(EGuardColors.primary)
+                    .accessibilityIdentifier("family.rename")
+                }
 
                 if let plan = family.plan {
                     EGuardCard {
@@ -97,7 +110,7 @@ struct FamilyView: View {
                 InlineError(message: errorMessage)
 
                 if !family.canManage {
-                    Text("Only the family admin can invite or remove parents.")
+                    Text("Only the family admin can invite or remove parents, or rename the family.")
                         .font(EGuardTypography.caption)
                         .foregroundStyle(EGuardColors.textSecondary)
                 }
@@ -109,6 +122,13 @@ struct FamilyView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadFamily() }
         .sheet(isPresented: $isAddingParent) { addParentSheet }
+        .alert("Rename family", isPresented: $isRenaming) {
+            TextField("Family name", text: $newFamilyName)
+            Button("Save") { Task { await renameFamily() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("2 to 80 characters. The name appears in invitations and the weekly summary.")
+        }
         .confirmationDialog(memberToRemove?.isPending == true ? "Withdraw the invitation to \(memberToRemove?.name ?? "this parent")?" : "Remove \(memberToRemove?.name ?? "parent")?", isPresented: Binding(get: { memberToRemove != nil }, set: { if !$0 { memberToRemove = nil } }), titleVisibility: .visible) {
             Button(memberToRemove?.isPending == true ? "Withdraw" : "Remove", role: .destructive) { Task { await removeMember() } }
             Button("Cancel", role: .cancel) {}
@@ -174,6 +194,18 @@ struct FamilyView: View {
         }
     }
 
+    private func renameFamily() async {
+        do {
+            let family = try await model.api.renameFamily(name: newFamilyName.trimmingCharacters(in: .whitespaces))
+            state = .loaded(family)
+            message = "The family is now called \(family.name)."
+            errorMessage = nil
+            await model.refreshDashboard()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func resend(_ member: FamilyMember) async {
         do {
             try await model.api.resendInvitation(memberId: member.id)
@@ -201,6 +233,6 @@ struct FamilyView: View {
     NavigationStack {
         FamilyView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

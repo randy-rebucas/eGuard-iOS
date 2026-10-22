@@ -42,7 +42,10 @@ struct NotificationsView: View {
             case .loaded(let prefs):
                 EGuardCard {
                     SectionHeader(title: "What eGuard sends you")
-                    toggle("Push alerts", detail: "Protection changes, device issues, approvals", symbol: "iphone.radiowaves.left.and.right", tint: EGuardColors.primary, value: prefs.notifyPush) { NotificationPrefsPatch(notifyPush: $0) }
+                    // Real-time alerts are an entitlement. Say so up front instead of letting the toggle bounce
+                    // back on a 403; turning it off always works, so the toggle itself stays enabled.
+                    let pushLocked = model.entitlements?.hasRealtimeAlerts == false
+                    toggle("Push alerts", detail: pushLocked ? "Not included in your plan" : "Protection changes, device issues, approvals", symbol: "iphone.radiowaves.left.and.right", tint: pushLocked ? EGuardColors.neutral : EGuardColors.primary, value: prefs.notifyPush) { NotificationPrefsPatch(notifyPush: $0) }
                     Divider()
                     toggle("Email alerts", detail: "The same alerts by email", symbol: "envelope.fill", tint: EGuardColors.tileTeal, value: prefs.notifyEmail) { NotificationPrefsPatch(notifyEmail: $0) }
                     Divider()
@@ -126,6 +129,6 @@ struct NotificationsView: View {
     NavigationStack {
         NotificationsView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

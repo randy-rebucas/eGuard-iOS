@@ -37,6 +37,6 @@ struct MainTabView: View {
     NavigationStack {
         MainTabView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

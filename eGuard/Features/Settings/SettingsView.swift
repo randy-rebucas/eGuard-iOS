@@ -142,6 +142,6 @@ struct SettingsView: View {
     NavigationStack {
         SettingsView(isRoot: true)
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

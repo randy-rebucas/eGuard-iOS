@@ -88,6 +88,6 @@ struct ProtectionProfileView: View {
     NavigationStack {
         ProtectionProfileView(childId: "child_1")
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

@@ -244,5 +244,5 @@ struct DeviceRemovedView: View {
 
 #Preview {
     ChildDeviceRootView()
-        .environment(AppModel.mock(mode: .child))
+        .environment(AppModel.live())
 }

@@ -282,6 +282,6 @@ struct ChildSetupView: View {
     NavigationStack {
         ChildSetupView(startStep: .code)
     }
-    .environment(AppModel.mock(mode: .unset))
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

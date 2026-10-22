@@ -12,6 +12,8 @@ struct PairingCodeView: View {
     @State private var secondsLeft = 15 * 60
     @State private var kind: CodeKind = .device
     @State private var browserLabel = ""
+    /// Set when the server refused the code with `403 email_unverified`, so the Resend banner shows.
+    @State private var needsVerification = false
 
     /// Phone-app codes and browser-extension codes are different and never interchangeable.
     private enum CodeKind: String, CaseIterable, Hashable {
@@ -45,7 +47,7 @@ struct PairingCodeView: View {
                     LoadingCard(message: "Creating a code…")
                 case .failed(let message):
                     ErrorCard(message: message) { Task { await requestCode() } }
-                    if message.contains("Verify") || message.contains("verify") {
+                    if needsVerification {
                         VerifyEmailBanner()
                     }
                 case .loaded(let code) where code.isBrowserCode == (kind == .browser):
@@ -108,13 +110,6 @@ struct PairingCodeView: View {
                     }
                 }
 
-                if kind == .device, let mock = model.api as? MockEGuardAPI {
-                    Button("Simulate device pairing (test server)") {
-                        mock.simulatePairing(childId: childId)
-                    }
-                    .buttonStyle(.eGuardSecondary)
-                    .accessibilityIdentifier("pairing.simulate")
-                }
             } actions: {
                 Button(isPaired ? "Done" : "Close") { dismiss() }
                     .buttonStyle(isPaired ? AnyButtonStyle(.eGuardPrimary) : AnyButtonStyle(.eGuardSecondary))
@@ -139,16 +134,28 @@ struct PairingCodeView: View {
 
     private func requestCode() async {
         state = .loading
+        needsVerification = false
         let label = browserLabel.trimmingCharacters(in: .whitespaces)
-        state = await load {
-            kind == .browser
+        do {
+            let code = kind == .browser
                 ? try await model.api.browserPairingCode(childId: childId, deviceLabel: label)
                 : try await model.api.pairingCode(childId: childId)
-        }
-        if let code = state.value {
-            secondsLeft = max(0, Int(code.expiresAt.timeIntervalSinceNow))
+            state = .loaded(code)
+            // Count down from `expiresInSeconds`, measured from now: the phone's clock may be off.
+            secondsLeft = code.secondsRemaining
+        } catch let error as APIError where error.code == "email_unverified" {
+            needsVerification = true
+            state = .failed(error.localizedDescription)
+        } catch let error as APIError where error.code == "plan_limit" || error.status == 409 {
+            // Every device slot on the plan is taken, including browsers (and after a lapse back to Free).
+            state = .failed(Self.deviceLimitMessage)
+        } catch {
+            state = .failed(error.localizedDescription)
         }
     }
+
+    /// Shown when `POST /children/{id}/pairing-code` answers `409`. Neutral: no upgrade wording.
+    static let deviceLimitMessage = "No free device slots on your plan. Remove a device or browser on the Devices tab, then create a new code. Contact support if you need to change your plan."
 
     /// Polls the child until a device appears, and counts the code down.
     private func pollForDevice() async {
@@ -178,6 +185,6 @@ struct AnyButtonStyle: ButtonStyle {
 
 #Preview {
     PairingCodeView(childId: "child_1")
-        .environment(AppModel.preview())
+        .environment(AppModel.live())
         .environment(AppRouter())
 }

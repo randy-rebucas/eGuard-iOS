@@ -268,6 +268,6 @@ struct SupportTicketView: View {
     NavigationStack {
         HelpSupportView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

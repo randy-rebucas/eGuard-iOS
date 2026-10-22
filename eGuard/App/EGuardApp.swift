@@ -8,9 +8,7 @@ import UserNotifications
 /// registers with `POST /me/push-tokens`.
 final class PushRegistrationDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-        if !ProcessInfo.processInfo.arguments.contains("-uiTesting") {
-            PushService.shared.configure()
-        }
+        PushService.shared.configure()
         return true
     }
 

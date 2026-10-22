@@ -97,6 +97,9 @@ struct HandDownDeviceView: View {
             needsVerification = true
             errorMessage = error.localizedDescription
             stage = .confirm
+        } catch let error as APIError where error.code == "plan_limit" || error.status == 409 {
+            errorMessage = PairingCodeView.deviceLimitMessage
+            stage = .name
         } catch let error as DeviceAPIError {
             errorMessage = ChildSetupView.pairingMessage(for: error)
             stage = .name
@@ -111,6 +114,6 @@ struct HandDownDeviceView: View {
     NavigationStack {
         HandDownDeviceView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

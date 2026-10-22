@@ -226,6 +226,6 @@ struct TwoFactorView: View {
     NavigationStack {
         TwoFactorView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

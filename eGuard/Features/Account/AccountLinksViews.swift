@@ -305,6 +305,6 @@ struct AcceptInviteView: View {
     NavigationStack {
         ForgotPasswordView()
     }
-    .environment(AppModel.mock())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

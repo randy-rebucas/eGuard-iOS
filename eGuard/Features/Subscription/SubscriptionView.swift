@@ -113,6 +113,6 @@ struct SubscriptionView: View {
     NavigationStack {
         SubscriptionView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

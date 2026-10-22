@@ -15,6 +15,7 @@ struct DashboardView: View {
                 OfflineBanner(lastVerified: nil)
             }
             VerifyEmailBanner()
+            PlanLapsedBanner()
 
             if let error = model.refreshError {
                 ErrorCard(message: error) { Task { await model.refreshDashboard() } }
@@ -107,7 +108,8 @@ struct DashboardView: View {
                 Button("Health Check") { router.push(.healthCheck(childId: nil, isOnboarding: false)) }
                     .buttonStyle(.eGuardSecondary)
             }
-            EGuardValueRow(label: "Devices", value: "\(dashboard.deviceCount)")
+            // Browsers take plan slots too, so the card counts them with phones and tablets, as the web does.
+            EGuardValueRow(label: (dashboard.browserCount ?? 0) > 0 ? "Devices & browsers" : "Devices", value: "\(dashboard.slotsUsed)")
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("dashboard.protection")
@@ -171,7 +173,7 @@ struct DashboardView: View {
                     ForEach(dashboard.recentAlerts) { alert in
                         APIAlertRow(alert: alert) {
                             Task { _ = try? await model.api.markAlertRead(id: alert.id) }
-                            if let action = alert.action { router.open(action) } else { router.show(.alerts) }
+                            if let action = alert.routableAction { router.open(action) } else { router.show(.alerts) }
                         }
                         if alert.id != dashboard.recentAlerts.last?.id { Divider() }
                     }
@@ -241,6 +243,6 @@ struct APIAlertRow: View {
     NavigationStack {
         DashboardView()
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

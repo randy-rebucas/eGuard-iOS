@@ -7,11 +7,14 @@ final class AppsManagementViewModel {
     var filter: AppsFilter = .installed
     var state: LoadState<AppsResponse> = .loading
     var websiteRequests: [BrowserAccessRequest] = []
+    /// One daily limit for all of a kind of app together ("Gaming time"), from `GET /children/{id}/category-limits`.
+    var categoryLimits: CategoryLimits?
     var isAdding = false
     var newAppName = ""
     var newAppApproval: AppApproval = .allowed
     var errorMessage: String?
     var limitEditing: ChildApp?
+    var categoryLimitEditing: CategoryLimit?
     var websiteRequestToApprove: BrowserAccessRequest?
 
     func load(childId: String, api: EGuardAPIService) async {
@@ -19,6 +22,7 @@ final class AppsManagementViewModel {
         state = await eGuard.load { try await api.apps(childId: childId, filter: filter) }
         // Website requests come from the browser extension and show alongside app requests.
         websiteRequests = (try? await api.browserAccessRequests(childId: childId))?.pending ?? []
+        categoryLimits = try? await api.categoryLimits(childId: childId)
     }
 
     func setAllowed(_ allowed: Bool, app: ChildApp, childId: String, api: EGuardAPIService) async {
@@ -34,6 +38,29 @@ final class AppsManagementViewModel {
         do {
             _ = try await api.updateApp(id: app.id, patch: AppPatch(approval: nil, dailyLimitMinutes: minutes, removeLimit: minutes == nil))
             await load(childId: childId, api: api)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// `nil` goes back to eGuard's guess from the app's name.
+    func setCategory(_ category: AppCategory?, app: ChildApp, childId: String, api: EGuardAPIService) async {
+        do {
+            _ = try await api.updateApp(id: app.id, patch: AppPatch(category: category?.rawValue, resetCategory: category == nil))
+            await load(childId: childId, api: api)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// `nil` minutes removes the limit, which works on every plan.
+    func setCategoryLimit(_ category: String, minutes: Int?, childId: String, api: EGuardAPIService) async {
+        do {
+            _ = try await api.setCategoryLimit(childId: childId, category: category, dailyLimitMinutes: minutes)
+            categoryLimits = try await api.categoryLimits(childId: childId)
+            errorMessage = nil
+        } catch let error as APIError where error.code == "plan_required" {
+            errorMessage = APIClient.storeSafeMessage(error.localizedDescription, status: 403)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -64,6 +91,8 @@ final class AppsManagementViewModel {
 /// 13 App Management, from `GET /children/{id}/apps?filter=`.
 struct AppsManagementView: View {
     let childId: String
+    /// A website request to open on the Pending tab, from a `REVIEW_SITE_REQUEST` alert.
+    var requestId: String? = nil
 
     @Environment(AppModel.self) private var model
     @State private var viewModel = AppsManagementViewModel()
@@ -118,6 +147,9 @@ struct AppsManagementView: View {
                             .foregroundStyle(EGuardColors.textSecondary)
                     }
                 }
+                if viewModel.filter == .installed {
+                    categoryLimitsSection
+                }
             }
 
             InlineError(message: viewModel.errorMessage)
@@ -134,6 +166,10 @@ struct AppsManagementView: View {
         }
         .navigationTitle("App Management")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            // A website-request alert lands on the Pending tab, where the request is listed.
+            if requestId != nil { viewModel.filter = .pending }
+        }
         .task(id: viewModel.filter) { await viewModel.load(childId: childId, api: model.api) }
         .alert("Add an app", isPresented: $viewModel.isAdding) {
             TextField("App name", text: $viewModel.newAppName)
@@ -145,6 +181,12 @@ struct AppsManagementView: View {
         .sheet(item: $viewModel.limitEditing) { app in
             AppLimitSheet(app: app) { minutes in
                 Task { await viewModel.setLimit(minutes, app: app, childId: childId, api: model.api) }
+            }
+            .presentationDetents([.medium])
+        }
+        .sheet(item: $viewModel.categoryLimitEditing) { limit in
+            MinutesPickerSheet(title: limit.title, minutes: limit.dailyLimitMinutes ?? 60) { minutes in
+                Task { await viewModel.setCategoryLimit(limit.category, minutes: minutes, childId: childId, api: model.api) }
             }
             .presentationDetents([.medium])
         }
@@ -184,7 +226,7 @@ struct AppsManagementView: View {
             SectionHeader(title: "Website requests")
             ForEach(viewModel.websiteRequests) { request in
                 HStack(spacing: EGuardSpacing.sm) {
-                    IconTile(symbolName: "globe", tint: EGuardColors.warning)
+                    IconTile(symbolName: "globe", tint: request.id == requestId ? EGuardColors.primary : EGuardColors.warning)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(request.domain).font(EGuardTypography.label)
                         Text(request.reason ?? request.createdAt.relativeDescription())
@@ -206,12 +248,76 @@ struct AppsManagementView: View {
         }
     }
 
+    /// Category limits: one daily limit for all of a child's games (or videos, social apps…) together.
+    @ViewBuilder
+    private var categoryLimitsSection: some View {
+        if let limits = viewModel.categoryLimits {
+            let active = limits.categories.filter { $0.dailyLimitMinutes != nil }
+            let free = limits.categories.filter { $0.dailyLimitMinutes == nil }
+            VStack(alignment: .leading, spacing: EGuardSpacing.sm) {
+                SectionHeader(title: "Category limits")
+                EGuardCard {
+                    if active.isEmpty {
+                        Text(limits.available
+                             ? "One daily limit for all games, videos or social apps together, on top of each app's own limit."
+                             : APIClient.storeSafeMessage(limits.upgrade ?? "Category limits aren't included in your plan.", status: 403))
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
+                    ForEach(active) { limit in
+                        HStack(spacing: EGuardSpacing.sm) {
+                            IconTile(symbolName: limit.kind?.symbolName ?? "square.grid.2x2.fill", tint: EGuardColors.tileOrange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(limit.title).font(EGuardTypography.label)
+                                Text("\(ProtectionConfigFormatter.duration(limit.dailyLimitMinutes ?? 0)) a day · \(ProtectionConfigFormatter.duration(limit.todayMinutes ?? 0)) used today")
+                                    .font(EGuardTypography.caption)
+                                    .foregroundStyle(EGuardColors.textSecondary)
+                            }
+                            Spacer()
+                            Menu {
+                                if limits.available {
+                                    Button("Change limit", systemImage: "hourglass") { viewModel.categoryLimitEditing = limit }
+                                }
+                                // Removing always works, even on a plan without category limits.
+                                Button("Remove limit", systemImage: "hourglass.badge.minus", role: .destructive) {
+                                    Task { await viewModel.setCategoryLimit(limit.category, minutes: nil, childId: childId, api: model.api) }
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle").foregroundStyle(EGuardColors.neutral)
+                            }
+                            .accessibilityLabel("Options for \(limit.title)")
+                        }
+                        .padding(.vertical, EGuardSpacing.xxs)
+                        .accessibilityIdentifier("apps.categoryLimit.\(limit.category.lowercased())")
+                        if limit.id != active.last?.id { Divider() }
+                    }
+                    if limits.available, !free.isEmpty {
+                        Menu {
+                            ForEach(free) { limit in
+                                Button(limit.title, systemImage: limit.kind?.symbolName ?? "square.grid.2x2") { viewModel.categoryLimitEditing = limit }
+                            }
+                        } label: {
+                            Label("Add a category limit", systemImage: "plus.circle.fill")
+                                .font(EGuardTypography.label)
+                                .foregroundStyle(EGuardColors.primary)
+                        }
+                        .accessibilityIdentifier("apps.addCategoryLimit")
+                    } else if !limits.available, !active.isEmpty {
+                        Text(APIClient.storeSafeMessage(limits.upgrade ?? "Category limits aren't included in your plan.", status: 403) + " Limits set before stay saved but aren't sent to devices.")
+                            .font(EGuardTypography.caption)
+                            .foregroundStyle(EGuardColors.textSecondary)
+                    }
+                }
+            }
+        }
+    }
+
     private func appRow(_ app: ChildApp) -> some View {
         HStack(spacing: EGuardSpacing.sm) {
             IconTile(symbolName: "app.fill", tint: app.approval == .blocked ? EGuardColors.danger : (app.isRequested ? EGuardColors.warning : EGuardColors.primary))
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name).font(EGuardTypography.label)
-                Text(app.subtitle)
+                Text([app.subtitle, app.categoryText].compactMap { $0 }.joined(separator: " · "))
                     .font(EGuardTypography.caption)
                     .foregroundStyle(app.approval == .blocked ? EGuardColors.danger : EGuardColors.textSecondary)
             }
@@ -239,6 +345,24 @@ struct AppsManagementView: View {
             Button("Set daily limit", systemImage: "hourglass") { viewModel.limitEditing = app }
             if app.dailyLimitMinutes != nil {
                 Button("Remove limit", systemImage: "hourglass.badge.minus") { Task { await viewModel.setLimit(nil, app: app, childId: childId, api: model.api) } }
+            }
+            // The category decides which category limit the app counts toward.
+            Menu("Category") {
+                ForEach(AppCategory.allCases) { kind in
+                    Button {
+                        Task { await viewModel.setCategory(kind, app: app, childId: childId, api: model.api) }
+                    } label: {
+                        if app.category == kind.rawValue {
+                            Label(kind.title, systemImage: "checkmark")
+                        } else {
+                            Text(kind.title)
+                        }
+                    }
+                }
+                if app.categoryAuto == false {
+                    Divider()
+                    Button("Use eGuard's guess", systemImage: "wand.and.stars") { Task { await viewModel.setCategory(nil, app: app, childId: childId, api: model.api) } }
+                }
             }
         }
         .accessibilityElement(children: .contain)
@@ -289,6 +413,6 @@ struct AppLimitSheet: View {
     NavigationStack {
         AppsManagementView(childId: "child_1")
     }
-    .environment(AppModel.preview())
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

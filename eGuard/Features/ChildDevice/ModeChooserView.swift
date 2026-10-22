@@ -82,6 +82,6 @@ struct ModeChooserView: View {
     NavigationStack {
         ModeChooserView()
     }
-    .environment(AppModel.mock(mode: .unset))
+    .environment(AppModel.live())
     .environment(AppRouter())
 }

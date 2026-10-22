@@ -197,8 +197,8 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.get("children/\(childId)/recommendations", query: query([("profile", profile)])), as: Recommendations.self)
     }
 
-    func setup(childId: String, profile: String, overrides: [JSONValue]) async throws -> SetupResponse {
-        try await client.send(.json(.post, "children/\(childId)/setup", body: SetupRequest(profile: profile, overrides: overrides)), as: SetupResponse.self)
+    func setup(childId: String, profile: String, overrides: [JSONValue], categoryLimits: [CategoryLimitUpdate]?) async throws -> SetupResponse {
+        try await client.send(.json(.post, "children/\(childId)/setup", body: SetupRequest(profile: profile, overrides: overrides, categoryLimits: categoryLimits)), as: SetupResponse.self)
     }
 
     func pairingCode(childId: String) async throws -> PairingCode {
@@ -263,8 +263,10 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.get("children/\(childId)/protections"), as: ProtectionsResponse.self).protections
     }
 
-    func updateProtection(childId: String, key: String, config: JSONValue) async throws -> Batch {
-        try await client.send(.json(.put, "children/\(childId)/protections/\(key)", body: config.removing("key")), as: Batch.self)
+    func updateProtection(childId: String, key: String, config: JSONValue, baseVersion: String?) async throws -> ProtectionUpdateResult {
+        var body = config.removing("key")
+        if let baseVersion { body = body.setting("baseVersion", to: .string(baseVersion)) }
+        return try await client.send(.json(.put, "children/\(childId)/protections/\(key)", body: body), as: ProtectionUpdateResult.self)
     }
 
     func batch(id: String) async throws -> Batch {
@@ -297,6 +299,14 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.json(.post, "children/\(childId)/apps", body: NewAppRequest(name: name, approval: approval, dailyLimitMinutes: dailyLimitMinutes)), as: ChildApp.self)
     }
 
+    func categoryLimits(childId: String) async throws -> CategoryLimits {
+        try await client.send(.get("children/\(childId)/category-limits"), as: CategoryLimits.self)
+    }
+
+    func setCategoryLimit(childId: String, category: String, dailyLimitMinutes: Int?) async throws -> CategoryLimitSaved {
+        try await client.send(.json(.put, "children/\(childId)/category-limits", body: CategoryLimitUpdate(category: category, dailyLimitMinutes: dailyLimitMinutes)), as: CategoryLimitSaved.self)
+    }
+
     func location(childId: String) async throws -> LocationResponse {
         try await client.send(.get("children/\(childId)/location"), as: LocationResponse.self)
     }
@@ -305,8 +315,28 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.get("children/\(childId)/location/visits", query: query([("limit", "50"), ("before", iso(before))])), as: VisitsPage.self)
     }
 
+    func visits(childId: String, day: String) async throws -> VisitsPage {
+        try await client.send(.get("children/\(childId)/location/visits", query: [URLQueryItem(name: "day", value: day)]), as: VisitsPage.self)
+    }
+
     func familyLocations() async throws -> FamilyLocations {
         try await client.send(.get("locations"), as: FamilyLocations.self)
+    }
+
+    func places() async throws -> [SavedPlace] {
+        try await client.send(.get("places"), as: PlacesResponse.self).places
+    }
+
+    func createPlace(_ place: NewPlace) async throws -> SavedPlace {
+        try await client.send(.json(.post, "places", body: place), as: SavedPlace.self)
+    }
+
+    func updatePlace(id: String, patch: PlacePatch) async throws -> SavedPlace {
+        try await client.send(.json(.patch, "places/\(id)", body: patch), as: SavedPlace.self)
+    }
+
+    func deletePlace(id: String) async throws {
+        try await client.send(.empty(.delete, "places/\(id)"))
     }
 
     // MARK: Alerts
@@ -344,13 +374,17 @@ final class LiveEGuardAPI: EGuardAPIService {
         try await client.send(.get("devices/\(id)"), as: DeviceDetail.self)
     }
 
-    func renameDevice(id: String, name: String) async throws -> DeviceDetail {
-        struct Body: Encodable { let name: String }
-        return try await client.send(.json(.patch, "devices/\(id)", body: Body(name: name)), as: DeviceDetail.self)
+    func updateDevice(id: String, patch: DevicePatch) async throws -> DeviceDetail {
+        try await client.send(.json(.patch, "devices/\(id)", body: patch), as: DeviceDetail.self)
     }
 
-    func unpairDevice(id: String, confirmation: DeletionConfirmation) async throws {
-        try await client.send(.json(.delete, "devices/\(id)", body: confirmation))
+    func moveDevice(id: String, childId: String, confirmation: DeletionConfirmation) async throws -> DeviceDetail {
+        try await client.send(.json(.post, "devices/\(id)/move", body: confirmation.body(adding: ["childId": .string(childId)])), as: DeviceDetail.self)
+    }
+
+    func unpairDevice(id: String, confirmation: DeletionConfirmation, deleteHistory: Bool) async throws {
+        let body = deleteHistory ? confirmation.body(adding: ["deleteHistory": .bool(true)]) : confirmation.body(adding: [:])
+        try await client.send(.json(.delete, "devices/\(id)", body: body))
     }
 
     func browsers() async throws -> [ConnectedBrowser] {
@@ -390,6 +424,10 @@ final class LiveEGuardAPI: EGuardAPIService {
 
     func family() async throws -> Family {
         try await client.send(.get("family"), as: Family.self)
+    }
+
+    func renameFamily(name: String) async throws -> Family {
+        try await client.send(.json(.patch, "family", body: FamilyPatch(name: name)), as: Family.self)
     }
 
     func inviteMember(name: String, email: String) async throws -> InvitationSent {

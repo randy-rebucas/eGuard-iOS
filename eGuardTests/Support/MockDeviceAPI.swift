@@ -1,4 +1,5 @@
 import Foundation
+@testable import eGuard
 
 /// A child device API backed by the same in-memory server as `MockEGuardAPI`, so a paired mock device
 /// shows up on the parent side and its reports verify the parent's changes.
